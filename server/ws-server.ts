@@ -20,17 +20,13 @@ if (!fs.existsSync(dir)) {
 
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
+db.pragma("foreign_keys = OFF");
 db.exec(`
-  CREATE TABLE IF NOT EXISTS documents (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL DEFAULT 'Untitled',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
+  DROP TABLE IF EXISTS yjs_documents;
+  DROP TABLE IF EXISTS documents;
   CREATE TABLE IF NOT EXISTS yjs_documents (
     doc_id TEXT PRIMARY KEY,
-    state BLOB,
-    FOREIGN KEY (doc_id) REFERENCES documents(id)
+    state BLOB
   );
 `);
 
