@@ -1,4 +1,3 @@
-import { getDocument, updateDocumentTimestamp } from "@/lib/db";
 import { withYDoc, readBlocks, applyOperations, type Operation } from "@/lib/yjs-api-bridge";
 
 export const dynamic = "force-dynamic";
@@ -8,11 +7,6 @@ export async function GET(
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
-  const doc = getDocument(docId);
-
-  if (!doc) {
-    return Response.json({ error: "Document not found" }, { status: 404 });
-  }
 
   try {
     const content = await withYDoc(docId, (_ydoc, fragment) => {
@@ -20,10 +14,8 @@ export async function GET(
     });
 
     return Response.json({
-      id: doc.id,
-      title: doc.title,
-      createdAt: doc.created_at,
-      updatedAt: doc.updated_at,
+      id: docId,
+      title: "Untitled",
       content,
     });
   } catch (e) {
@@ -39,11 +31,6 @@ export async function PATCH(
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
-  const doc = getDocument(docId);
-
-  if (!doc) {
-    return Response.json({ error: "Document not found" }, { status: 404 });
-  }
 
   let body: { author?: string; operations: Operation[] };
   try {
@@ -60,8 +47,6 @@ export async function PATCH(
     const result = await withYDoc(docId, (ydoc, fragment) => {
       return applyOperations(ydoc, fragment, body.operations);
     });
-
-    updateDocumentTimestamp(docId);
 
     if (result.errors.length > 0) {
       return Response.json(

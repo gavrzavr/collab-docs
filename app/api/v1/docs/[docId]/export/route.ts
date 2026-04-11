@@ -1,5 +1,4 @@
 import { type NextRequest } from "next/server";
-import { getDocument } from "@/lib/db";
 import { withYDoc, readBlocks } from "@/lib/yjs-api-bridge";
 import { blocksToMarkdown } from "@/lib/export-markdown";
 import { blocksToDocx } from "@/lib/export-docx";
@@ -11,12 +10,6 @@ export async function GET(
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
-  const doc = getDocument(docId);
-
-  if (!doc) {
-    return Response.json({ error: "Document not found" }, { status: 404 });
-  }
-
   const format = request.nextUrl.searchParams.get("format") || "md";
 
   try {
@@ -30,7 +23,7 @@ export async function GET(
         headers: {
           "Content-Type":
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          "Content-Disposition": `attachment; filename="${doc.title || "document"}.docx"`,
+          "Content-Disposition": `attachment; filename="document.docx"`,
         },
       });
     }
@@ -40,7 +33,7 @@ export async function GET(
     return new Response(md, {
       headers: {
         "Content-Type": "text/markdown; charset=utf-8",
-        "Content-Disposition": `attachment; filename="${doc.title || "document"}.md"`,
+        "Content-Disposition": `attachment; filename="document.md"`,
       },
     });
   } catch (e) {
