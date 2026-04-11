@@ -190,6 +190,8 @@ wss.on("connection", (ws, req) => {
   });
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`y-websocket server running on ws://localhost:${PORT}`);
+const HOST = process.env.HOST || "0.0.0.0";
+
+httpServer.listen(PORT, HOST, () => {
+  console.log(`y-websocket server running on ws://${HOST}:${PORT}`);
 });

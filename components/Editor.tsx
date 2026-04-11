@@ -28,7 +28,7 @@ export default function Editor({ docId, userName, userColor }: EditorProps) {
 
   useEffect(() => {
     const ydoc = ydocRef.current!;
-    const wsUrl = `ws://${window.location.hostname}:1234`;
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `ws://${window.location.hostname}:1234`;
     const provider = new WebsocketProvider(wsUrl, docId, ydoc);
     providerRef.current = provider;
 
