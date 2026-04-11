@@ -16,6 +16,4 @@ COPY tsconfig.json ./
 # Create data directory for SQLite
 RUN mkdir -p /app/data
 
-EXPOSE 1234
-
 CMD ["npx", "tsx", "server/ws-server.ts"]

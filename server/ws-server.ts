@@ -9,7 +9,7 @@ import path from "path";
 import fs from "fs";
 import http from "http";
 
-const PORT = Number(process.env.WS_PORT) || 1234;
+const PORT = Number(process.env.PORT) || Number(process.env.WS_PORT) || 1234;
 const DB_PATH = path.join(process.cwd(), "data", "collab-docs.db");
 
 // Ensure data directory exists
