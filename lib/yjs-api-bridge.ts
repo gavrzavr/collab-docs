@@ -2,7 +2,7 @@ import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import WebSocket from "ws";
 
-const WS_URL = process.env.WS_URL || "ws://localhost:1234";
+const WS_URL = process.env.WS_URL || (process.env.NEXT_PUBLIC_WS_URL ? process.env.NEXT_PUBLIC_WS_URL : "ws://localhost:1234");
 
 interface BlockData {
   id: string;
