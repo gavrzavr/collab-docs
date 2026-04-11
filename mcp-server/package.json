@@ -1,0 +1,19 @@
+{
+  "name": "collab-docs-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for CollabDocs collaborative document editor",
+  "main": "dist/index.js",
+  "bin": {
+    "collab-docs-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  }
+}

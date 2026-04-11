@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "nextjs-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "ws-server",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "ws-server"],
+      "port": 1234
+    }
+  ]
+}
