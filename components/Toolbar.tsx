@@ -13,7 +13,9 @@ interface ToolbarProps {
 export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarProps) {
   const [copied, setCopied] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const exportRef = useRef<HTMLDivElement>(null);
 
   async function copyLink() {
     const url = `${window.location.origin}/doc/${docId}`;
@@ -23,12 +25,14 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
   }
 
   async function exportMarkdown() {
+    setExportOpen(false);
     const res = await fetch(`/api/v1/docs/${docId}/export?format=md`);
     const blob = await res.blob();
     downloadBlob(blob, "document.md");
   }
 
   async function exportDocx() {
+    setExportOpen(false);
     const res = await fetch(`/api/v1/docs/${docId}/export?format=docx`);
     const blob = await res.blob();
     downloadBlob(blob, "document.docx");
@@ -62,7 +66,6 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
       alert("Не удалось импортировать файл. Убедитесь, что это .docx файл.");
     } finally {
       setImporting(false);
-      // Reset file input so same file can be re-imported
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -74,6 +77,16 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
       <Link href={sessionUser ? "/dashboard" : "/"} className="text-sm font-medium text-gray-700 mr-auto hover:text-black transition-colors">
         CollabDocs
       </Link>
+
+      {/* 1. Share */}
+      <button
+        onClick={copyLink}
+        className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
+      >
+        {copied ? "Copied!" : "Share"}
+      </button>
+
+      {/* 2. Import */}
       <input
         ref={fileInputRef}
         type="file"
@@ -84,28 +97,44 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
       <button
         onClick={() => fileInputRef.current?.click()}
         disabled={importing}
-        className="px-3 py-1.5 text-sm bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-md transition-colors disabled:opacity-50"
+        className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors disabled:opacity-50"
       >
-        {importing ? "Importing..." : "Import .docx"}
+        {importing ? "Importing..." : "Import"}
       </button>
-      <button
-        onClick={copyLink}
-        className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
-      >
-        {copied ? "Copied!" : "Share Link"}
-      </button>
-      <button
-        onClick={exportMarkdown}
-        className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
-      >
-        Export .md
-      </button>
-      <button
-        onClick={exportDocx}
-        className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
-      >
-        Export .docx
-      </button>
+
+      {/* 3. Export (dropdown) */}
+      <div className="relative" ref={exportRef}>
+        <button
+          onClick={() => setExportOpen(!exportOpen)}
+          className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors flex items-center gap-1"
+        >
+          Export
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        {exportOpen && (
+          <>
+            {/* Backdrop to close dropdown */}
+            <div className="fixed inset-0 z-10" onClick={() => setExportOpen(false)} />
+            <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20 min-w-[140px]">
+              <button
+                onClick={exportDocx}
+                className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors rounded-t-md"
+              >
+                Export .docx
+              </button>
+              <button
+                onClick={exportMarkdown}
+                className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors rounded-b-md"
+              >
+                Export .md
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
       {sessionUser && (
         <div className="flex items-center gap-2 ml-2 pl-2 border-l border-gray-200">
           {sessionUser.image && (
