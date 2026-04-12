@@ -5,7 +5,16 @@ import "@blocknote/mantine/style.css";
 
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
+import { BlockNoteSchema, defaultBlockSpecs, createHeadingBlockSpec } from "@blocknote/core";
 import * as Y from "yjs";
+
+// Custom schema: limit headings to 3 levels, disable toggle headings
+const schema = BlockNoteSchema.create({
+  blockSpecs: {
+    ...defaultBlockSpecs,
+    heading: createHeadingBlockSpec({ levels: [1, 2, 3], allowToggleHeadings: false }),
+  },
+});
 import { WebsocketProvider } from "y-websocket";
 import { useEffect, useRef, useState } from "react";
 
@@ -57,6 +66,7 @@ export default function Editor({ docId, userName, userColor, onSynced }: EditorP
 
   const editor = useCreateBlockNote(
     {
+      schema,
       collaboration: providerRef.current
         ? {
             provider: providerRef.current,
