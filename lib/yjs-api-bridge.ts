@@ -41,8 +41,9 @@ export async function withYDoc<T>(
     await waitForSync(provider);
     const fragment = ydoc.getXmlFragment("blocknote");
     const result = fn(ydoc, fragment);
-    // Give a small delay for the update to propagate
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Wait for the update to propagate to the WS server and be persisted.
+    // The WS server debounces persistence at 500ms, so we need to wait longer.
+    await new Promise((resolve) => setTimeout(resolve, 2000));
     return result;
   } finally {
     provider.destroy();
