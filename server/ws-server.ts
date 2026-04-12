@@ -244,6 +244,123 @@ function replaceDocContent(ydoc: Y.Doc, markdownText: string): number {
   return blocks.length;
 }
 
+/** Extract blocks with IDs for block-level editing */
+function extractBlocksWithIds(ydoc: Y.Doc): Array<{ id: string; type: string; text: string; level?: number }> {
+  const fragment = ydoc.getXmlFragment("blocknote");
+  const blocks: Array<{ id: string; type: string; text: string; level?: number }> = [];
+
+  function getTextContent(el: Y.XmlElement): string {
+    let text = "";
+    for (let i = 0; i < el.length; i++) {
+      const child = el.get(i);
+      if (child instanceof Y.XmlText) {
+        text += child.toJSON();
+      } else if (child instanceof Y.XmlElement) {
+        text += getTextContent(child);
+      }
+    }
+    return text;
+  }
+
+  function walkBlockGroup(bg: Y.XmlElement) {
+    for (let i = 0; i < bg.length; i++) {
+      const bc = bg.get(i);
+      if (bc instanceof Y.XmlElement && bc.nodeName === "blockContainer") {
+        const id = bc.getAttribute("id") || "";
+        for (let j = 0; j < bc.length; j++) {
+          const child = bc.get(j);
+          if (child instanceof Y.XmlElement) {
+            if (child.nodeName === "blockGroup") {
+              walkBlockGroup(child);
+            } else {
+              const text = getTextContent(child);
+              const type = child.nodeName;
+              const level = type === "heading" ? Number(child.getAttribute("level") || "1") : undefined;
+              blocks.push({ id, type, text, level });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (let i = 0; i < fragment.length; i++) {
+    const child = fragment.get(i);
+    if (child instanceof Y.XmlElement && child.nodeName === "blockGroup") {
+      walkBlockGroup(child);
+    }
+  }
+
+  return blocks;
+}
+
+/** Find a blockContainer by its ID and return it with parent info */
+function findBlockContainer(fragment: Y.XmlFragment, blockId: string): { container: Y.XmlElement; parent: Y.XmlElement; index: number } | null {
+  function search(parent: Y.XmlElement | Y.XmlFragment): { container: Y.XmlElement; parent: Y.XmlElement; index: number } | null {
+    for (let i = 0; i < parent.length; i++) {
+      const child = parent.get(i);
+      if (child instanceof Y.XmlElement) {
+        if (child.nodeName === "blockContainer" && child.getAttribute("id") === blockId) {
+          return { container: child, parent: parent as Y.XmlElement, index: i };
+        }
+        const found = search(child);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+  return search(fragment);
+}
+
+/** Update text of a specific block by ID */
+function updateBlockText(ydoc: Y.Doc, blockId: string, newText: string, newType?: string, newLevel?: number): boolean {
+  const fragment = ydoc.getXmlFragment("blocknote");
+  const found = findBlockContainer(fragment, blockId);
+  if (!found) return false;
+
+  ydoc.transact(() => {
+    const { container, parent, index } = found;
+    // Remove old container and insert new one at same position
+    parent.delete(index, 1);
+    const type = newType || "paragraph";
+    const block = createBlock(ydoc, type, newText, newLevel);
+    // Preserve the original block ID
+    block.setAttribute("id", blockId);
+    parent.insert(index, [block]);
+  });
+
+  return true;
+}
+
+/** Delete a block by ID */
+function deleteBlock(ydoc: Y.Doc, blockId: string): boolean {
+  const fragment = ydoc.getXmlFragment("blocknote");
+  const found = findBlockContainer(fragment, blockId);
+  if (!found) return false;
+
+  ydoc.transact(() => {
+    found.parent.delete(found.index, 1);
+  });
+
+  return true;
+}
+
+/** Insert a block after a specific block ID */
+function insertBlockAfter(ydoc: Y.Doc, afterBlockId: string, type: string, text: string, level?: number): string | null {
+  const fragment = ydoc.getXmlFragment("blocknote");
+  const found = findBlockContainer(fragment, afterBlockId);
+  if (!found) return null;
+
+  const newBlock = createBlock(ydoc, type, text, level);
+  const newId = newBlock.getAttribute("id") || "";
+
+  ydoc.transact(() => {
+    found.parent.insert(found.index + 1, [newBlock]);
+  });
+
+  return newId;
+}
+
 /** Dump XML structure for debugging */
 function dumpXml(element: Y.XmlElement | Y.XmlText | Y.XmlFragment, indent = 0): string {
   const pad = "  ".repeat(indent);
@@ -328,7 +445,7 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "read_document",
-    "Read the content of a CollabDocs document. Returns the document text in markdown format.",
+    "Read the content of a CollabDocs document. Returns each block with its ID, type, and text. Use the block IDs to make targeted edits with update_block, delete_block, or insert_block.",
     {
       doc_url: z.string().describe("Document URL (e.g. https://collab-docs-rose.vercel.app/doc/ABC123) or just the document ID"),
     },
@@ -336,13 +453,28 @@ function createMcpServer(): McpServer {
       const docId = extractDocIdFromUrl(doc_url);
       try {
         const entry = getOrCreateDoc(docId);
-        const text = extractDocumentText(entry.ydoc);
+        const blocks = extractBlocksWithIds(entry.ydoc);
+        if (blocks.length === 0) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Document (ID: ${docId}) is empty. Use edit_document to add content.`,
+            }],
+          };
+        }
+
+        const lines = blocks.map(b => {
+          const prefix = b.type === "heading" ? "#".repeat(b.level || 1) + " "
+            : b.type === "bulletListItem" ? "- "
+            : b.type === "numberedListItem" ? "1. "
+            : "";
+          return `[${b.id}] ${prefix}${b.text}`;
+        });
+
         return {
           content: [{
             type: "text" as const,
-            text: text
-              ? `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}):\n\n${text}`
-              : `Document (ID: ${docId}) is empty. Use edit_document to add content.`,
+            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}), ${blocks.length} blocks:\n\n${lines.join("\n")}\n\nTo edit a specific block, use update_block with the block ID shown in [brackets]. To add new content at the end, use edit_document with mode "append". NEVER use mode "replace" unless the user explicitly asks to rewrite the entire document.`,
           }],
         };
       } catch (e) {
@@ -356,11 +488,11 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "edit_document",
-    "Write content to a CollabDocs document. Supports markdown: # headings (H1-H3), - bullets, 1. numbered lists. Text is appended by default; use mode 'replace' to overwrite everything.",
+    "Add new content to a CollabDocs document. By default appends to the end. Use mode 'replace' ONLY when the user explicitly asks to rewrite the entire document. For editing specific blocks, use update_block instead.",
     {
       doc_url: z.string().describe("Document URL or ID"),
-      content: z.string().describe("Markdown text to write. Use \\n for newlines."),
-      mode: z.enum(["append", "replace"]).default("append").describe("'append' adds to end (default), 'replace' overwrites entire document"),
+      content: z.string().describe("Markdown text to write. Use \\n for newlines, # for headings, - for bullets."),
+      mode: z.enum(["append", "replace"]).default("append").describe("'append' adds to end (default). ONLY use 'replace' when user explicitly asks to rewrite the whole document."),
     },
     async ({ doc_url, content, mode }) => {
       const docId = extractDocIdFromUrl(doc_url);
@@ -377,6 +509,112 @@ function createMcpServer(): McpServer {
             type: "text" as const,
             text: `Done! ${mode === "replace" ? "Replaced" : "Appended"} ${count} blocks. View: ${VERCEL_URL}/doc/${docId}`,
           }],
+        };
+      } catch (e) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${e}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  mcp.tool(
+    "update_block",
+    "Update the text of a specific block in a CollabDocs document. Use read_document first to get block IDs. This edits a single block without touching the rest of the document.",
+    {
+      doc_url: z.string().describe("Document URL or ID"),
+      block_id: z.string().describe("The block ID to update (from read_document output, shown in [brackets])"),
+      text: z.string().describe("New text for this block"),
+      block_type: z.string().optional().describe("New block type: paragraph, heading, bulletListItem, numberedListItem. If omitted, keeps current type."),
+      level: z.number().optional().describe("Heading level (1-3). Only used when block_type is 'heading'."),
+    },
+    async ({ doc_url, block_id, text, block_type, level }) => {
+      const docId = extractDocIdFromUrl(doc_url);
+      try {
+        const entry = getOrCreateDoc(docId);
+
+        // If no type specified, detect current type
+        let type = block_type;
+        if (!type) {
+          const blocks = extractBlocksWithIds(entry.ydoc);
+          const current = blocks.find(b => b.id === block_id);
+          type = current?.type || "paragraph";
+          if (!level && current?.level) level = current.level;
+        }
+
+        const ok = updateBlockText(entry.ydoc, block_id, text, type, level);
+        if (!ok) {
+          return {
+            content: [{ type: "text" as const, text: `Block "${block_id}" not found. Use read_document to get current block IDs.` }],
+            isError: true,
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: `Updated block ${block_id}. View: ${VERCEL_URL}/doc/${docId}` }],
+        };
+      } catch (e) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${e}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  mcp.tool(
+    "delete_block",
+    "Delete a specific block from a CollabDocs document. Use read_document first to get block IDs.",
+    {
+      doc_url: z.string().describe("Document URL or ID"),
+      block_id: z.string().describe("The block ID to delete"),
+    },
+    async ({ doc_url, block_id }) => {
+      const docId = extractDocIdFromUrl(doc_url);
+      try {
+        const entry = getOrCreateDoc(docId);
+        const ok = deleteBlock(entry.ydoc, block_id);
+        if (!ok) {
+          return {
+            content: [{ type: "text" as const, text: `Block "${block_id}" not found.` }],
+            isError: true,
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: `Deleted block ${block_id}. View: ${VERCEL_URL}/doc/${docId}` }],
+        };
+      } catch (e) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${e}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  mcp.tool(
+    "insert_block",
+    "Insert a new block after a specific block in a CollabDocs document. Use read_document first to get block IDs.",
+    {
+      doc_url: z.string().describe("Document URL or ID"),
+      after_block_id: z.string().describe("Insert the new block after this block ID"),
+      text: z.string().describe("Text content for the new block"),
+      block_type: z.string().default("paragraph").describe("Block type: paragraph, heading, bulletListItem, numberedListItem"),
+      level: z.number().optional().describe("Heading level (1-3). Only for headings."),
+    },
+    async ({ doc_url, after_block_id, text, block_type, level }) => {
+      const docId = extractDocIdFromUrl(doc_url);
+      try {
+        const entry = getOrCreateDoc(docId);
+        const newId = insertBlockAfter(entry.ydoc, after_block_id, block_type, text, level);
+        if (!newId) {
+          return {
+            content: [{ type: "text" as const, text: `Block "${after_block_id}" not found.` }],
+            isError: true,
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: `Inserted new block ${newId} after ${after_block_id}. View: ${VERCEL_URL}/doc/${docId}` }],
         };
       } catch (e) {
         return {
@@ -568,12 +806,13 @@ const httpServer = http.createServer(async (req, res) => {
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: undefined, // stateless
         });
-        res.on("close", () => {
-          transport.close().catch(() => {});
-          mcpServer.close().catch(() => {});
-        });
         await mcpServer.connect(transport);
         await transport.handleRequest(req, res);
+        // Clean up after response is done
+        setTimeout(() => {
+          transport.close().catch(() => {});
+          mcpServer.close().catch(() => {});
+        }, 100);
       } catch (e) {
         console.error("MCP error:", e);
         if (!res.headersSent) {
@@ -766,6 +1005,14 @@ function gracefulShutdown(signal: string) {
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// Prevent crashes from unhandled errors (e.g. MCP transport cleanup)
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception (server continues):", err.message);
+});
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled rejection (server continues):", err);
+});
 
 // ─── Automatic SQLite Backup ────────────────────────────────────────────────
 // Create a backup copy of the database every hour to protect against corruption.
