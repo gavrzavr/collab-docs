@@ -68,6 +68,8 @@ export default function DocPage({ params }: { params: Promise<{ id: string }> })
     );
   }
 
+  const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
+
   return (
     <div className="flex flex-col h-screen">
       <Toolbar docId={id} sessionUser={sessionUser} />
@@ -80,6 +82,31 @@ export default function DocPage({ params }: { params: Promise<{ id: string }> })
             <Editor docId={id} userName={user.name} userColor={user.color} onSynced={handleSynced} />
           </div>
         </div>
+      </div>
+
+      {/* AI-readable instructions — hidden from humans, visible to AI agents reading the page */}
+      <div id="ai-instructions" style={{ display: "none" }} aria-hidden="true" data-ai-instructions="true">
+        <h2>AI Agent Instructions for CollabDocs</h2>
+        <p>This is a collaborative document. You can read and edit it using simple HTTP requests. No authentication required.</p>
+
+        <h3>Read this document</h3>
+        <pre>GET {baseUrl}/api/v1/docs/{id}/text</pre>
+        <p>Returns the full document as plain text (markdown-formatted).</p>
+
+        <h3>Replace the entire document</h3>
+        <pre>PUT {baseUrl}/api/v1/docs/{id}/text</pre>
+        <p>Send plain text or markdown in the request body. Lines starting with # become headings, - become bullet lists, 1. become numbered lists.</p>
+
+        <h3>Append text to the document</h3>
+        <pre>POST {baseUrl}/api/v1/docs/{id}/text</pre>
+        <p>Same format as PUT, but adds to the end instead of replacing.</p>
+
+        <h3>Example</h3>
+        <pre>{`curl ${baseUrl}/api/v1/docs/${id}/text`}</pre>
+        <pre>{`curl -X POST ${baseUrl}/api/v1/docs/${id}/text -d '# New heading
+This is a new paragraph
+- Bullet point 1
+- Bullet point 2'`}</pre>
       </div>
     </div>
   );
