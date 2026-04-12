@@ -13,9 +13,10 @@ interface EditorProps {
   docId: string;
   userName: string;
   userColor: string;
+  onSynced?: () => void;
 }
 
-export default function Editor({ docId, userName, userColor }: EditorProps) {
+export default function Editor({ docId, userName, userColor, onSynced }: EditorProps) {
   const [ready, setReady] = useState(false);
   const ydocRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
@@ -37,13 +38,22 @@ export default function Editor({ docId, userName, userColor }: EditorProps) {
       color: userColor,
     });
 
+    // Notify parent when Yjs is synced
+    if (provider.synced) {
+      onSynced?.();
+    } else {
+      provider.once("sync", () => {
+        onSynced?.();
+      });
+    }
+
     setReady(true);
 
     return () => {
       provider.destroy();
       providerRef.current = null;
     };
-  }, [docId, userName, userColor]);
+  }, [docId, userName, userColor, onSynced]);
 
   const editor = useCreateBlockNote(
     {
@@ -62,11 +72,7 @@ export default function Editor({ docId, userName, userColor }: EditorProps) {
   );
 
   if (!ready || !providerRef.current) {
-    return (
-      <div className="flex items-center justify-center py-20 text-gray-400">
-        Loading editor...
-      </div>
-    );
+    return null;
   }
 
   return <BlockNoteView editor={editor} theme="light" />;
