@@ -161,23 +161,28 @@ function generateBlockId(): string {
   return id + "-" + Date.now().toString(36);
 }
 
-/** Create a BlockNote-compatible blockContainer XML element */
+/** Create a BlockNote-compatible blockContainer XML element.
+ *  Must match exact structure that BlockNote creates:
+ *  <blockContainer id="xxx">
+ *    <paragraph backgroundColor="default" textColor="default" textAlignment="left">
+ *      [XmlText: "content"]
+ *  No inline-content wrapper — text goes directly into the block element.
+ */
 function createBlock(ydoc: Y.Doc, type: string, text: string, level?: number): Y.XmlElement {
   const container = new Y.XmlElement("blockContainer");
   container.setAttribute("id", generateBlockId());
-  container.setAttribute("backgroundColor", "default");
-  container.setAttribute("textColor", "default");
 
   const blockEl = new Y.XmlElement(type);
-  if (type === "heading" && level) {
-    blockEl.setAttribute("level", String(level));
-  }
+  blockEl.setAttribute("backgroundColor", "default");
+  blockEl.setAttribute("textColor", "default");
   blockEl.setAttribute("textAlignment", "left");
+  if (type === "heading") {
+    blockEl.setAttribute("level", String(level || 1));
+    blockEl.setAttribute("isToggleable", "false");
+  }
 
-  const inlineContent = new Y.XmlElement("inline-content");
-  inlineContent.insert(0, [new Y.XmlText(text)]);
-  blockEl.insert(0, [inlineContent]);
-
+  // Text goes directly into the block element — NO inline-content wrapper
+  blockEl.insert(0, [new Y.XmlText(text)]);
   container.insert(0, [blockEl]);
   return container;
 }
