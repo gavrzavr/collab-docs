@@ -118,18 +118,27 @@ function ConnectContent() {
             <div className="flex items-start gap-3">
               <span className="flex-shrink-0 w-6 h-6 bg-orange-500 text-white rounded-full flex items-center justify-center text-xs font-bold">1</span>
               <div>
-                <p className="font-medium">Open Settings</p>
+                <p className="font-medium">Open config folder</p>
                 <p className="text-sm text-gray-600">Claude Desktop → Settings → Developer → Edit Config</p>
+                <p className="text-sm text-gray-500">This will open a Finder/Explorer window with the config folder.</p>
               </div>
             </div>
             <div className="flex items-start gap-3">
               <span className="flex-shrink-0 w-6 h-6 bg-orange-500 text-white rounded-full flex items-center justify-center text-xs font-bold">2</span>
               <div>
-                <p className="font-medium">Add this to your config file:</p>
+                <p className="font-medium">Open <code className="bg-gray-200 px-1 rounded">claude_desktop_config.json</code> in any text editor</p>
+                <p className="text-sm text-gray-500 mb-2">Right-click → Open With → TextEdit (Mac) or Notepad (Windows)</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3">
+              <span className="flex-shrink-0 w-6 h-6 bg-orange-500 text-white rounded-full flex items-center justify-center text-xs font-bold">3</span>
+              <div>
+                <p className="font-medium">Replace the file contents with this:</p>
                 <div className="mt-2 relative">
                   <pre className="bg-white border border-gray-300 rounded-lg px-4 py-3 text-sm font-mono overflow-x-auto">
                     {desktopConfig}
                   </pre>
+                  <p className="text-xs text-gray-500 mt-1">If you already have other MCP servers, just add the &quot;collabdocs&quot; entry inside your existing &quot;mcpServers&quot; block.</p>
                   <div className="mt-2">
                     <CopyButton text={desktopConfig} label="Copy config" />
                   </div>
@@ -137,10 +146,10 @@ function ConnectContent() {
               </div>
             </div>
             <div className="flex items-start gap-3">
-              <span className="flex-shrink-0 w-6 h-6 bg-orange-500 text-white rounded-full flex items-center justify-center text-xs font-bold">3</span>
+              <span className="flex-shrink-0 w-6 h-6 bg-orange-500 text-white rounded-full flex items-center justify-center text-xs font-bold">4</span>
               <div>
-                <p className="font-medium">Restart Claude Desktop</p>
-                <p className="text-sm text-gray-600">Close and reopen the app. You&apos;ll see CollabDocs in the tools list.</p>
+                <p className="font-medium">Save the file and restart Claude Desktop</p>
+                <p className="text-sm text-gray-600">Close and reopen the app. You&apos;ll see CollabDocs in the tools list (hammer icon).</p>
               </div>
             </div>
           </div>
