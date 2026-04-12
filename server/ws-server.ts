@@ -74,6 +74,190 @@ function extractTitle(ydoc: Y.Doc): string {
   return "Untitled";
 }
 
+/** Extract all text from a Yjs doc as markdown */
+function extractDocumentText(ydoc: Y.Doc): string {
+  const fragment = ydoc.getXmlFragment("blocknote");
+  const lines: string[] = [];
+
+  function walkBlockGroup(bg: Y.XmlElement) {
+    for (let i = 0; i < bg.length; i++) {
+      const bc = bg.get(i);
+      if (bc instanceof Y.XmlElement && bc.nodeName === "blockContainer") {
+        walkBlockContainer(bc);
+      }
+    }
+  }
+
+  function getTextContent(el: Y.XmlElement): string {
+    let text = "";
+    for (let i = 0; i < el.length; i++) {
+      const child = el.get(i);
+      if (child instanceof Y.XmlText) {
+        text += child.toJSON();
+      } else if (child instanceof Y.XmlElement) {
+        text += getTextContent(child);
+      }
+    }
+    return text;
+  }
+
+  function walkBlockContainer(bc: Y.XmlElement) {
+    for (let i = 0; i < bc.length; i++) {
+      const child = bc.get(i);
+      if (child instanceof Y.XmlElement) {
+        if (child.nodeName === "blockGroup") {
+          walkBlockGroup(child);
+        } else {
+          const text = getTextContent(child);
+          const type = child.nodeName;
+          if (type === "heading") {
+            const level = child.getAttribute("level") || "1";
+            lines.push("#".repeat(Number(level)) + " " + text);
+          } else if (type === "bulletListItem") {
+            lines.push("- " + text);
+          } else if (type === "numberedListItem") {
+            lines.push("1. " + text);
+          } else {
+            lines.push(text);
+          }
+        }
+      }
+    }
+  }
+
+  for (let i = 0; i < fragment.length; i++) {
+    const child = fragment.get(i);
+    if (child instanceof Y.XmlElement && child.nodeName === "blockGroup") {
+      walkBlockGroup(child);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+/** Parse markdown into block descriptors */
+function parseMarkdown(text: string): Array<{ type: string; text: string; level?: number }> {
+  return text.split("\n").map(line => {
+    const trimmed = line.trimEnd();
+    const headingMatch = trimmed.match(/^(#{1,3})\s+(.*)/);
+    if (headingMatch) {
+      return { type: "heading", text: headingMatch[2], level: headingMatch[1].length };
+    } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+      return { type: "bulletListItem", text: trimmed.slice(2) };
+    } else if (/^\d+\.\s/.test(trimmed)) {
+      return { type: "numberedListItem", text: trimmed.replace(/^\d+\.\s/, "") };
+    }
+    return { type: "paragraph", text: trimmed };
+  }).filter(b => b.text.length > 0); // skip empty lines
+}
+
+/** Generate a random block ID */
+function generateBlockId(): string {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let id = "";
+  for (let i = 0; i < 10; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id + "-" + Date.now().toString(36);
+}
+
+/** Create a BlockNote-compatible blockContainer XML element */
+function createBlock(ydoc: Y.Doc, type: string, text: string, level?: number): Y.XmlElement {
+  const container = new Y.XmlElement("blockContainer");
+  container.setAttribute("id", generateBlockId());
+  container.setAttribute("backgroundColor", "default");
+  container.setAttribute("textColor", "default");
+
+  const blockEl = new Y.XmlElement(type);
+  if (type === "heading" && level) {
+    blockEl.setAttribute("level", String(level));
+  }
+  blockEl.setAttribute("textAlignment", "left");
+
+  const inlineContent = new Y.XmlElement("inline-content");
+  inlineContent.insert(0, [new Y.XmlText(text)]);
+  blockEl.insert(0, [inlineContent]);
+
+  container.insert(0, [blockEl]);
+  return container;
+}
+
+/** Append markdown text to a Yjs document */
+function appendTextToDoc(ydoc: Y.Doc, markdownText: string): number {
+  const blocks = parseMarkdown(markdownText);
+  const fragment = ydoc.getXmlFragment("blocknote");
+
+  ydoc.transact(() => {
+    // Find or create the blockGroup
+    let blockGroup: Y.XmlElement | null = null;
+    for (let i = 0; i < fragment.length; i++) {
+      const child = fragment.get(i);
+      if (child instanceof Y.XmlElement && child.nodeName === "blockGroup") {
+        blockGroup = child;
+        break;
+      }
+    }
+
+    if (!blockGroup) {
+      blockGroup = new Y.XmlElement("blockGroup");
+      fragment.insert(0, [blockGroup]);
+    }
+
+    // Append new blocks at the end
+    for (const block of blocks) {
+      const el = createBlock(ydoc, block.type, block.text, block.level);
+      blockGroup.insert(blockGroup.length, [el]);
+    }
+  });
+
+  return blocks.length;
+}
+
+/** Replace entire document content with markdown */
+function replaceDocContent(ydoc: Y.Doc, markdownText: string): number {
+  const blocks = parseMarkdown(markdownText);
+  const fragment = ydoc.getXmlFragment("blocknote");
+
+  ydoc.transact(() => {
+    // Clear everything
+    while (fragment.length > 0) {
+      fragment.delete(0);
+    }
+
+    // Create fresh blockGroup with new blocks
+    const blockGroup = new Y.XmlElement("blockGroup");
+    for (const block of blocks) {
+      const el = createBlock(ydoc, block.type, block.text, block.level);
+      blockGroup.insert(blockGroup.length, [el]);
+    }
+    fragment.insert(0, [blockGroup]);
+  });
+
+  return blocks.length;
+}
+
+/** Dump XML structure for debugging */
+function dumpXml(element: Y.XmlElement | Y.XmlText | Y.XmlFragment, indent = 0): string {
+  const pad = "  ".repeat(indent);
+  if (element instanceof Y.XmlText) return `${pad}[TEXT: "${element.toJSON()}"]\n`;
+  if (element instanceof Y.XmlFragment) {
+    let r = `${pad}[Fragment] (${element.length} children)\n`;
+    for (let i = 0; i < element.length; i++) {
+      const c = element.get(i);
+      if (c instanceof Y.XmlElement || c instanceof Y.XmlText) r += dumpXml(c, indent + 1);
+    }
+    return r;
+  }
+  const attrs = element.getAttributes();
+  const attrStr = Object.keys(attrs).length > 0 ? " " + Object.entries(attrs).map(([k, v]) => `${k}="${v}"`).join(" ") : "";
+  let r = `${pad}<${element.nodeName}${attrStr}>\n`;
+  for (let i = 0; i < element.length; i++) {
+    const c = element.get(i);
+    if (c instanceof Y.XmlElement || c instanceof Y.XmlText) r += dumpXml(c, indent + 1);
+  }
+  return r;
+}
+
 function getOrCreateDoc(docName: string) {
   let entry = docs.get(docName);
   if (entry) return entry;
@@ -196,6 +380,77 @@ const httpServer = http.createServer(async (req, res) => {
     ).all(ownerId);
 
     sendJson(res, 200, { documents: rows });
+    return;
+  }
+
+  // GET /api/docs/:id/content — read document content as markdown
+  const contentGetMatch = pathname.match(/^\/api\/docs\/([^/]+)\/content$/);
+  if (req.method === "GET" && contentGetMatch) {
+    const docId = contentGetMatch[1];
+    try {
+      const entry = getOrCreateDoc(docId);
+      const text = extractDocumentText(entry.ydoc);
+      sendJson(res, 200, { content: text });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
+  // POST /api/docs/:id/content — append text to document
+  const contentPostMatch = pathname.match(/^\/api\/docs\/([^/]+)\/content$/);
+  if (req.method === "POST" && contentPostMatch) {
+    const docId = contentPostMatch[1];
+    try {
+      const body = await parseBody(req);
+      const content = (body.content as string) || (body.text as string) || "";
+      if (!content) {
+        sendJson(res, 400, { error: "Missing content field" });
+        return;
+      }
+      const entry = getOrCreateDoc(docId);
+      const blocksAdded = appendTextToDoc(entry.ydoc, content);
+      sendJson(res, 200, { success: true, blocksAdded });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
+  // PUT /api/docs/:id/content — replace entire document content
+  const contentPutMatch = pathname.match(/^\/api\/docs\/([^/]+)\/content$/);
+  if (req.method === "PUT" && contentPutMatch) {
+    const docId = contentPutMatch[1];
+    try {
+      const body = await parseBody(req);
+      const content = (body.content as string) || (body.text as string) || "";
+      if (!content) {
+        sendJson(res, 400, { error: "Missing content field" });
+        return;
+      }
+      const entry = getOrCreateDoc(docId);
+      const blocksWritten = replaceDocContent(entry.ydoc, content);
+      sendJson(res, 200, { success: true, blocksWritten });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
+  // GET /api/docs/:id/debug — dump XML structure
+  const debugMatch = pathname.match(/^\/api\/docs\/([^/]+)\/debug$/);
+  if (req.method === "GET" && debugMatch) {
+    const docId = debugMatch[1];
+    try {
+      const entry = getOrCreateDoc(docId);
+      const fragment = entry.ydoc.getXmlFragment("blocknote");
+      const dump = dumpXml(fragment);
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(dump);
+    } catch (e) {
+      res.writeHead(500);
+      res.end(String(e));
+    }
     return;
   }
 

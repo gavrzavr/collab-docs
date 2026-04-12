@@ -23,3 +23,29 @@ export async function listUserDocuments(ownerId: string): Promise<{
   const res = await fetch(`${WS_API_URL}/api/docs?ownerId=${encodeURIComponent(ownerId)}`);
   return res.json();
 }
+
+/** Read document content as markdown text via WS server */
+export async function readDocContent(docId: string): Promise<{ content: string }> {
+  const res = await fetch(`${WS_API_URL}/api/docs/${encodeURIComponent(docId)}/content`);
+  return res.json();
+}
+
+/** Append text to document via WS server */
+export async function appendDocContent(docId: string, content: string): Promise<{ success: boolean; blocksAdded: number }> {
+  const res = await fetch(`${WS_API_URL}/api/docs/${encodeURIComponent(docId)}/content`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  return res.json();
+}
+
+/** Replace entire document content via WS server */
+export async function replaceDocContent(docId: string, content: string): Promise<{ success: boolean; blocksWritten: number }> {
+  const res = await fetch(`${WS_API_URL}/api/docs/${encodeURIComponent(docId)}/content`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  return res.json();
+}
