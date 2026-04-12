@@ -1,0 +1,17 @@
+{
+  "name": "CollabDocs",
+  "description": "Collaborative document editor for humans and AI. Read and edit documents in real-time.",
+  "url": "https://collab-docs-production.up.railway.app/mcp",
+  "transport": "streamable-http",
+  "tools": [
+    {
+      "name": "read_document",
+      "description": "Read document content as markdown"
+    },
+    {
+      "name": "edit_document",
+      "description": "Append or replace document content with markdown"
+    }
+  ],
+  "setup_instructions": "Add this MCP server URL to your AI client: https://collab-docs-production.up.railway.app/mcp"
+}

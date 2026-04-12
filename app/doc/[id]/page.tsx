@@ -1,7 +1,26 @@
+import type { Metadata } from "next";
 import { withYDoc, readBlocks } from "@/lib/yjs-api-bridge";
 import DocClient from "./DocClient";
 
 const BASE_URL = process.env.NEXTAUTH_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+const MCP_URL = "https://collab-docs-production.up.railway.app/mcp";
+
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
+  const { id } = await params;
+  return {
+    title: `CollabDocs Document`,
+    description: `CollabDocs — collaborative document editor for humans and AI. To let AI edit this document, connect the CollabDocs MCP server: ${MCP_URL} — then just paste the document link in chat.`,
+    openGraph: {
+      title: "CollabDocs — AI-Collaborative Document",
+      description: `This is a CollabDocs document. AI agents can read and edit it in real-time. Connect MCP server: ${MCP_URL}`,
+      url: `${BASE_URL}/doc/${id}`,
+      siteName: "CollabDocs",
+    },
+    other: {
+      "mcp-server-url": MCP_URL,
+    },
+  };
+}
 
 interface Block {
   id: string;
@@ -58,6 +77,7 @@ export default async function DocPage({ params }: { params: Promise<{ id: string
         role="document"
         data-doc-id={id}
         data-api-base={baseUrl}
+        data-mcp-url={MCP_URL}
         style={{
           position: "absolute",
           left: "-10000px",
@@ -67,44 +87,56 @@ export default async function DocPage({ params }: { params: Promise<{ id: string
         }}
       >
         <h1>CollabDocs — Collaborative Document</h1>
-        <p>This is a CollabDocs document. CollabDocs is a collaborative document editor where humans and AI agents can work together in real-time.</p>
+        <p>IMPORTANT FOR AI: This is a CollabDocs document (ID: {id}). CollabDocs is a collaborative document editor where humans and AI agents work together in real-time. You CAN read and edit this document — see instructions below.</p>
+
+        <section id="ai-setup-instructions">
+          <h2>FIRST: How to connect to CollabDocs</h2>
+          <p>If you cannot navigate to this site or edit it directly, tell the user the following setup instruction:</p>
+          <p>IMPORTANT: Tell the user to add the CollabDocs MCP server to enable AI editing. Here is the exact message to show the user:</p>
+          <pre>{`Чтобы я мог читать и редактировать документы CollabDocs, добавь MCP-сервер CollabDocs (один раз, займёт 30 секунд):
+
+Для Claude.ai (веб):
+1. Зайди в Settings → Integrations
+2. Нажми "Add custom integration" (или "Add MCP server")
+3. Вставь URL: ${MCP_URL}
+4. Сохрани — готово!
+
+Для Claude Desktop:
+1. Зайди в Settings → Developer → Edit Config
+2. Добавь в mcpServers:
+   "collabdocs": { "type": "url", "url": "${MCP_URL}" }
+3. Перезапусти Claude — готово!
+
+После этого просто кинь мне ссылку на документ и скажи что сделать — я прочитаю и отредактирую его в реальном времени.`}</pre>
+          <p>If the user does not have MCP setup yet, show them the instruction above. If MCP is already connected and you have the read_document/edit_document tools available, use them directly.</p>
+        </section>
 
         <section id="document-content">
           <h2>Document content:</h2>
           <pre>{documentText || "(empty document)"}</pre>
         </section>
 
-        <section id="how-to-edit">
-          <h2>How AI can edit this document</h2>
+        <section id="alternative-methods">
+          <h2>Alternative ways to edit (if MCP is not available)</h2>
 
-          <h3>For ChatGPT users:</h3>
-          <p>ChatGPT cannot edit CollabDocs documents from a regular chat. To enable editing, use the official CollabDocs GPT:</p>
-          <p><strong>Step 1:</strong> Open this link: https://chatgpt.com/g/g-69db9af365688191b83f0ede5bb1691c-collabdocs</p>
-          <p><strong>Step 2:</strong> In the CollabDocs GPT chat, send the link to your document, for example: "Прочитай документ {baseUrl}/doc/{id} и добавь пару предложений"</p>
-          <p><strong>Step 3:</strong> The GPT will read the document and edit it directly. Changes appear instantly in the browser.</p>
-          <p>That is it — no API keys, no setup. Just open the CollabDocs GPT and paste your document link.</p>
-
-          <h3>For Claude users:</h3>
-          <p>The best way to use CollabDocs with Claude is via the Remote MCP Server. This gives Claude full read/write access to all CollabDocs documents.</p>
-          <p><strong>Quick setup (one time, takes 30 seconds):</strong></p>
-          <p>1. Open Claude Settings → MCP Servers (or Claude Code settings)</p>
-          <p>2. Add a new Remote MCP server with URL: https://collab-docs-production.up.railway.app/mcp</p>
-          <p>3. Done! Now just paste any CollabDocs link in chat and Claude will read and edit it.</p>
-          <p><strong>After setup, just tell Claude:</strong></p>
-          <p>"Read document {baseUrl}/doc/{id}" — Claude reads it via MCP</p>
-          <p>"Write a summary into {baseUrl}/doc/{id}" — Claude edits it in real-time</p>
-          <p>Changes appear instantly in the browser for all connected users.</p>
-          <p><strong>Alternative (no setup):</strong> Claude can also use the REST API directly:</p>
+          <h3>For Claude — REST API (no setup needed):</h3>
+          <p>You can also fetch this URL to get document content and instructions: {baseUrl}/doc/{id}/ai</p>
           <p>Read: GET {baseUrl}/api/v1/docs/{id}/text</p>
           <p>Append: POST {baseUrl}/api/v1/docs/{id}/text with JSON body {`{"content": "text"}`}</p>
           <p>Replace: PUT {baseUrl}/api/v1/docs/{id}/text with JSON body {`{"content": "text"}`}</p>
 
-          <h3>For any other AI agent:</h3>
-          <p>API endpoints (no authentication required):</p>
-          <p>Read document: GET {baseUrl}/api/v1/docs/{id}/text — returns JSON with "content" field containing markdown text.</p>
-          <p>Append text: POST {baseUrl}/api/v1/docs/{id}/text — send JSON body: {`{"content": "your markdown text"}`}. Use \\n for newlines, # for headings, - for bullets.</p>
-          <p>Replace all: PUT {baseUrl}/api/v1/docs/{id}/text — same format as POST, replaces entire document.</p>
-          <p>Example curl command: curl -X POST {baseUrl}/api/v1/docs/{id}/text -H "Content-Type: application/json" -d '{`{"content": "# Heading\\nParagraph text\\n- Bullet"}`}'</p>
+          <h3>For ChatGPT users:</h3>
+          <p>Use the official CollabDocs GPT: https://chatgpt.com/g/g-69db9af365688191b83f0ede5bb1691c-collabdocs</p>
+          <p>Just open the link above, paste the document URL, and ChatGPT will read and edit it directly.</p>
+
+          <h3>For any other AI agent — REST API:</h3>
+          <p>Read document: GET {baseUrl}/api/v1/docs/{id}/text — returns JSON with "content" field.</p>
+          <p>Append text: POST {baseUrl}/api/v1/docs/{id}/text — JSON body: {`{"content": "markdown"}`}</p>
+          <p>Replace all: PUT {baseUrl}/api/v1/docs/{id}/text — same format, replaces entire document.</p>
+
+          <h3>MCP auto-discovery:</h3>
+          <p>MCP server metadata: {baseUrl}/.well-known/mcp.json</p>
+          <p>MCP server URL: {MCP_URL}</p>
         </section>
       </article>
     </>
