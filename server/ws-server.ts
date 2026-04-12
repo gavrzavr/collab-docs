@@ -140,7 +140,9 @@ function extractDocumentText(ydoc: Y.Doc): string {
 
 /** Parse markdown into block descriptors */
 function parseMarkdown(text: string): Array<{ type: string; text: string; level?: number }> {
-  return text.split("\n").map(line => {
+  // Normalize line endings: handle escaped \n from JSON, \r\n, and real \n
+  const normalized = text.replace(/\\n/g, "\n").replace(/\r\n/g, "\n");
+  return normalized.split("\n").map(line => {
     const trimmed = line.trimEnd();
     const headingMatch = trimmed.match(/^(#{1,3})\s+(.*)/);
     if (headingMatch) {
