@@ -20,7 +20,7 @@ function waitForSync(provider: WebsocketProvider): Promise<void> {
     }
     const timeout = setTimeout(() => {
       reject(new Error("WebSocket sync timeout"));
-    }, 5000);
+    }, 15000);
     provider.once("sync", () => {
       clearTimeout(timeout);
       resolve();

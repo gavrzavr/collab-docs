@@ -37,8 +37,11 @@ export async function GET(
       }
     }
 
-    return new Response(lines.join("\n"), {
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    // Return both JSON and plain text — JSON for ChatGPT Actions, plain text in a field
+    const plainText = lines.join("\n");
+    return Response.json({
+      content: plainText,
+      blockCount: blocks.length,
     });
   } catch (e) {
     return new Response(`Error reading document: ${e}`, { status: 500 });

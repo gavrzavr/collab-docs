@@ -30,11 +30,21 @@
         ],
         "responses": {
           "200": {
-            "description": "Document content as plain text",
+            "description": "Document content",
             "content": {
-              "text/plain": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "type": "object",
+                  "properties": {
+                    "content": {
+                      "type": "string",
+                      "description": "The document content as markdown text"
+                    },
+                    "blockCount": {
+                      "type": "integer",
+                      "description": "Number of blocks in the document"
+                    }
+                  }
                 }
               }
             }
