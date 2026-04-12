@@ -91,20 +91,22 @@ function getOrCreateDoc(docName: string) {
 
   // Persist on updates (debounced) + update title
   let persistTimeout: ReturnType<typeof setTimeout> | null = null;
+  const persistDoc = () => {
+    const state = Buffer.from(Y.encodeStateAsUpdate(ydoc));
+    db.prepare(
+      "INSERT INTO yjs_documents (doc_id, state) VALUES (?, ?) ON CONFLICT(doc_id) DO UPDATE SET state = ?"
+    ).run(docName, state, state);
+
+    // Update document title from first heading
+    const title = extractTitle(ydoc);
+    db.prepare(
+      "UPDATE documents SET title = ?, updated_at = datetime('now') WHERE id = ?"
+    ).run(title, docName);
+  };
+
   ydoc.on("update", () => {
     if (persistTimeout) clearTimeout(persistTimeout);
-    persistTimeout = setTimeout(() => {
-      const state = Buffer.from(Y.encodeStateAsUpdate(ydoc));
-      db.prepare(
-        "INSERT INTO yjs_documents (doc_id, state) VALUES (?, ?) ON CONFLICT(doc_id) DO UPDATE SET state = ?"
-      ).run(docName, state, state);
-
-      // Update document title from first heading
-      const title = extractTitle(ydoc);
-      db.prepare(
-        "UPDATE documents SET title = ?, updated_at = datetime('now') WHERE id = ?"
-      ).run(title, docName);
-    }, 1000);
+    persistTimeout = setTimeout(persistDoc, 500);
   });
 
   entry = { ydoc, awareness, conns: new Set() };
@@ -303,10 +305,7 @@ wss.on("connection", (ws, req) => {
         const current = docs.get(docName);
         if (current && current.conns.size === 0) {
           // Final persist
-          const state = Buffer.from(Y.encodeStateAsUpdate(entry.ydoc));
-          db.prepare(
-            "INSERT INTO yjs_documents (doc_id, state) VALUES (?, ?) ON CONFLICT(doc_id) DO UPDATE SET state = ?"
-          ).run(docName, state, state);
+          persistDoc();
           entry.ydoc.destroy();
           docs.delete(docName);
         }
@@ -315,8 +314,94 @@ wss.on("connection", (ws, req) => {
   });
 });
 
+// ─── Graceful Shutdown ──────────────────────────────────────────────────────
+// When Railway redeploys, it sends SIGTERM. We must persist ALL in-memory
+// documents before exiting, otherwise unsaved changes are lost forever.
+
+function persistAllDocs() {
+  let count = 0;
+  for (const [docName, entry] of docs) {
+    try {
+      const state = Buffer.from(Y.encodeStateAsUpdate(entry.ydoc));
+      db.prepare(
+        "INSERT INTO yjs_documents (doc_id, state) VALUES (?, ?) ON CONFLICT(doc_id) DO UPDATE SET state = ?"
+      ).run(docName, state, state);
+
+      const title = extractTitle(entry.ydoc);
+      db.prepare(
+        "UPDATE documents SET title = ?, updated_at = datetime('now') WHERE id = ?"
+      ).run(title, docName);
+
+      count++;
+    } catch (e) {
+      console.error(`Failed to persist doc ${docName}:`, e);
+    }
+  }
+  return count;
+}
+
+function gracefulShutdown(signal: string) {
+  console.log(`\n${signal} received. Persisting all documents...`);
+  const count = persistAllDocs();
+  console.log(`Persisted ${count} documents. Closing database...`);
+
+  // Close all WebSocket connections
+  for (const [, entry] of docs) {
+    for (const conn of entry.conns) {
+      conn.close();
+    }
+    entry.ydoc.destroy();
+  }
+  docs.clear();
+
+  db.close();
+  console.log("Database closed. Exiting.");
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// ─── Automatic SQLite Backup ────────────────────────────────────────────────
+// Create a backup copy of the database every hour to protect against corruption.
+
+const BACKUP_INTERVAL = 60 * 60 * 1000; // 1 hour
+
+function backupDatabase() {
+  try {
+    // First, persist all in-memory docs so backup has latest data
+    persistAllDocs();
+
+    const backupPath = path.join(DATA_DIR, "collab-docs-backup.db");
+    const backupPathPrev = path.join(DATA_DIR, "collab-docs-backup-prev.db");
+
+    // Rotate: current backup → prev backup
+    if (fs.existsSync(backupPath)) {
+      fs.copyFileSync(backupPath, backupPathPrev);
+    }
+
+    // Use SQLite's backup API (safe even while db is in use)
+    db.backup(backupPath)
+      .then(() => {
+        console.log(`Database backed up to ${backupPath} at ${new Date().toISOString()}`);
+      })
+      .catch((e: Error) => {
+        console.error("Backup failed:", e);
+      });
+  } catch (e) {
+    console.error("Backup error:", e);
+  }
+}
+
+// Run backup every hour
+setInterval(backupDatabase, BACKUP_INTERVAL);
+// Also run first backup 5 minutes after startup
+setTimeout(backupDatabase, 5 * 60 * 1000);
+
 const HOST = process.env.HOST || "0.0.0.0";
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`y-websocket server running on ws://${HOST}:${PORT}`);
+  console.log(`Data directory: ${DATA_DIR}`);
+  console.log(`Database: ${DB_PATH}`);
 });
