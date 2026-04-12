@@ -1,7 +1,7 @@
 import { withYDoc, readBlocks } from "@/lib/yjs-api-bridge";
 import DocClient from "./DocClient";
 
-const BASE_URL = process.env.NEXTAUTH_URL || process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000";
+const BASE_URL = process.env.NEXTAUTH_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
 interface Block {
   id: string;
