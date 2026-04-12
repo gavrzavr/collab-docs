@@ -14,9 +14,10 @@ interface EditorProps {
   userName: string;
   userColor: string;
   onSynced?: () => void;
+  registerImportHtml?: (fn: (html: string) => void) => void;
 }
 
-export default function Editor({ docId, userName, userColor, onSynced }: EditorProps) {
+export default function Editor({ docId, userName, userColor, onSynced, registerImportHtml }: EditorProps) {
   const [ready, setReady] = useState(false);
   const ydocRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
@@ -70,6 +71,21 @@ export default function Editor({ docId, userName, userColor, onSynced }: EditorP
     },
     [ready]
   );
+
+  // Register import handler so parent can trigger HTML import
+  useEffect(() => {
+    if (!registerImportHtml || !editor) return;
+    registerImportHtml(async (html: string) => {
+      try {
+        const blocks = await editor.tryParseHTMLToBlocks(html);
+        // Insert imported blocks at the end of the document
+        const lastBlock = editor.document[editor.document.length - 1];
+        editor.insertBlocks(blocks, lastBlock, "after");
+      } catch (err) {
+        console.error("Failed to import HTML into editor:", err);
+      }
+    });
+  }, [editor, registerImportHtml]);
 
   if (!ready || !providerRef.current) {
     return null;

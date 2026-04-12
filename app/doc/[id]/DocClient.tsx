@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import NamePrompt from "@/components/NamePrompt";
 import Toolbar from "@/components/Toolbar";
@@ -34,9 +34,14 @@ export default function DocClient({ id, initialBlocks }: DocClientProps) {
   const [checked, setChecked] = useState(false);
   const [sessionUser, setSessionUser] = useState<{ name: string; email: string; image?: string } | null>(null);
   const [synced, setSynced] = useState(false);
+  const importHtmlRef = useRef<((html: string) => void) | null>(null);
 
   const handleSynced = useCallback(() => {
     setSynced(true);
+  }, []);
+
+  const handleImportHtml = useCallback((html: string) => {
+    importHtmlRef.current?.(html);
   }, []);
 
   useEffect(() => {
@@ -80,7 +85,7 @@ export default function DocClient({ id, initialBlocks }: DocClientProps) {
 
   return (
     <div className="flex flex-col h-screen">
-      <Toolbar docId={id} sessionUser={sessionUser} />
+      <Toolbar docId={id} sessionUser={sessionUser} onImportHtml={handleImportHtml} />
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-[800px] mx-auto py-8">
           {/* Show server-rendered preview while Yjs is connecting */}
@@ -128,7 +133,13 @@ export default function DocClient({ id, initialBlocks }: DocClientProps) {
           )}
           {/* Editor — hidden until synced */}
           <div style={{ opacity: synced ? 1 : 0, position: synced ? "static" : "absolute", left: synced ? "auto" : "-9999px" }}>
-            <Editor docId={id} userName={user.name} userColor={user.color} onSynced={handleSynced} />
+            <Editor
+              docId={id}
+              userName={user.name}
+              userColor={user.color}
+              onSynced={handleSynced}
+              registerImportHtml={(fn) => { importHtmlRef.current = fn; }}
+            />
           </div>
         </div>
       </div>
