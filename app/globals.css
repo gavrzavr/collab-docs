@@ -27,6 +27,23 @@ body {
   padding-bottom: 200px !important;
 }
 
+/* Hide Heading 4-6 and Toggle Headings from block type menu */
+[data-test="heading-4"],
+[data-test="heading-5"],
+[data-test="heading-6"],
+[data-test="toggle-heading-1"],
+[data-test="toggle-heading-2"],
+[data-test="toggle-heading-3"] {
+  display: none !important;
+}
+
+/* Also hide by text content for slash menu */
+.bn-slash-menu [class*="heading"][class*="4"],
+.bn-slash-menu [class*="heading"][class*="5"],
+.bn-slash-menu [class*="heading"][class*="6"] {
+  display: none !important;
+}
+
 /* Name prompt overlay */
 .name-prompt-overlay {
   position: fixed;
