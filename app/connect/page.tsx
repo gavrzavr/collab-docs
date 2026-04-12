@@ -75,21 +75,21 @@ function ConnectContent() {
             <div className="flex items-start gap-3">
               <span className="flex-shrink-0 w-6 h-6 bg-orange-500 text-white rounded-full flex items-center justify-center text-xs font-bold">1</span>
               <div>
-                <p className="font-medium">Open Settings</p>
-                <p className="text-sm text-gray-600">Claude.ai → Settings (bottom left) → Integrations</p>
+                <p className="font-medium">Open Connectors</p>
+                <p className="text-sm text-gray-600">Claude.ai → Settings (bottom left) → Connectors</p>
               </div>
             </div>
             <div className="flex items-start gap-3">
               <span className="flex-shrink-0 w-6 h-6 bg-orange-500 text-white rounded-full flex items-center justify-center text-xs font-bold">2</span>
               <div>
-                <p className="font-medium">Add integration</p>
-                <p className="text-sm text-gray-600">Click &quot;Add&quot; → Choose &quot;Custom MCP Server&quot; or &quot;Remote MCP&quot;</p>
+                <p className="font-medium">Click &quot;Add custom connector&quot;</p>
+                <p className="text-sm text-gray-600">It&apos;s at the bottom of the connectors list</p>
               </div>
             </div>
             <div className="flex items-start gap-3">
               <span className="flex-shrink-0 w-6 h-6 bg-orange-500 text-white rounded-full flex items-center justify-center text-xs font-bold">3</span>
               <div>
-                <p className="font-medium">Paste MCP server URL</p>
+                <p className="font-medium">Paste the MCP server URL</p>
                 <div className="mt-2 flex items-center gap-2">
                   <code className="flex-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono select-all">
                     {MCP_URL}
