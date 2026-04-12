@@ -49,35 +49,50 @@ export default async function DocPage({ params }: { params: Promise<{ id: string
       {/* Interactive editor (client component) */}
       <DocClient id={id} initialBlocks={blocks} />
 
-      {/* Server-rendered content for AI agents — visible in initial HTML */}
-      <div id="ai-collab-doc" style={{ display: "none" }} data-doc-id={id} data-api-base={baseUrl}>
-        <h2>CollabDocs — AI Agent Instructions</h2>
-        <p>This is a real-time collaborative document. You can read and edit it using simple HTTP requests. No authentication required.</p>
+      {/*
+        AI-readable content. Uses <article> with role="document" so bots/AI read it.
+        Visually hidden from human users via CSS, but NOT display:none so parsers see it.
+      */}
+      <article
+        id="ai-collab-doc"
+        role="document"
+        data-doc-id={id}
+        data-api-base={baseUrl}
+        style={{
+          position: "absolute",
+          left: "-10000px",
+          width: "1px",
+          height: "1px",
+          overflow: "hidden",
+        }}
+      >
+        <h2>CollabDocs — Document Content and API</h2>
 
-        <h3>Current document content:</h3>
-        <pre id="doc-content">{documentText || "(empty document)"}</pre>
+        <section id="document-content">
+          <h3>Document content:</h3>
+          <pre>{documentText || "(empty document)"}</pre>
+        </section>
 
-        <h3>API Endpoints:</h3>
+        <section id="api-instructions">
+          <h3>How to read and edit this document via API (no auth required):</h3>
 
-        <h4>Read document (plain text)</h4>
-        <pre>GET {baseUrl}/api/v1/docs/{id}/text</pre>
+          <p>Read document as text:</p>
+          <code>GET {baseUrl}/api/v1/docs/{id}/text</code>
 
-        <h4>Append text to document</h4>
-        <pre>POST {baseUrl}/api/v1/docs/{id}/text</pre>
-        <p>Body: plain text or markdown. Lines starting with # = headings, - = bullet lists, 1. = numbered lists.</p>
+          <p>Append text to end of document:</p>
+          <code>POST {baseUrl}/api/v1/docs/{id}/text</code>
+          <p>Send plain text or markdown in request body. # = headings, - = bullets, 1. = numbered lists.</p>
 
-        <h4>Replace entire document</h4>
-        <pre>PUT {baseUrl}/api/v1/docs/{id}/text</pre>
-        <p>Same format as POST, but replaces all content.</p>
+          <p>Replace entire document:</p>
+          <code>PUT {baseUrl}/api/v1/docs/{id}/text</code>
 
-        <h4>Example:</h4>
-        <pre>{`curl ${baseUrl}/api/v1/docs/${id}/text`}</pre>
-        <pre>{`curl -X POST ${baseUrl}/api/v1/docs/${id}/text \\
-  -H "Content-Type: text/plain" \\
-  -d '# My heading
-Some paragraph text
-- Bullet point'`}</pre>
-      </div>
+          <p>Example — read:</p>
+          <code>curl {baseUrl}/api/v1/docs/{id}/text</code>
+
+          <p>Example — append:</p>
+          <code>{`curl -X POST ${baseUrl}/api/v1/docs/${id}/text -H "Content-Type: text/plain" -d "Hello from AI"`}</code>
+        </section>
+      </article>
     </>
   );
 }
