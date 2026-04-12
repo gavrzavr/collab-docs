@@ -4,19 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-const API_BASE_URL = process.env.API_BASE_URL || "http://localhost:3000";
-
-async function apiCall(path: string, options?: RequestInit) {
-  const url = `${API_BASE_URL}/api/v1${path}`;
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
-  });
-  return res;
-}
+const API_BASE_URL = process.env.API_BASE_URL || "https://collab-docs-rose.vercel.app";
 
 function extractDocId(docUrl: string): string {
   // Accept full URL like http://host/doc/abc123 or just the ID
@@ -28,117 +16,106 @@ function extractDocId(docUrl: string): string {
 
 const server = new McpServer({
   name: "collab-docs",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
 server.tool(
   "read_document",
-  "Read the full content of a collaborative document",
+  "Read the full content of a collaborative document. Accepts a URL like https://collab-docs-rose.vercel.app/doc/ABC123 or just the document ID.",
   {
     doc_url: z.string().describe("The document URL or ID"),
   },
   async ({ doc_url }) => {
     const docId = extractDocId(doc_url);
-    const res = await apiCall(`/docs/${docId}`);
+    const url = `${API_BASE_URL}/api/v1/docs/${docId}/text`;
 
-    if (!res.ok) {
-      const err = await res.json();
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const err = await res.text();
+        return {
+          content: [{ type: "text" as const, text: `Error reading document: ${err}` }],
+          isError: true,
+        };
+      }
+
+      const data = await res.json();
+      const content = data.content || "(empty document)";
+
       return {
-        content: [{ type: "text" as const, text: `Error: ${err.error || res.statusText}` }],
+        content: [
+          {
+            type: "text" as const,
+            text: `Document ID: ${docId}\nURL: ${API_BASE_URL}/doc/${docId}\n\n---\n${content}\n---\n\nTo edit this document, use the edit_document tool with the same URL.`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text" as const, text: `Network error: ${err}` }],
         isError: true,
       };
     }
-
-    const doc = await res.json();
-    let text = `# ${doc.title}\n\n`;
-    for (const block of doc.content) {
-      const prefix = getBlockPrefix(block.type, block.props);
-      text += `[${block.id}] ${prefix}${block.text}\n`;
-    }
-
-    return {
-      content: [{ type: "text" as const, text }],
-    };
   }
 );
 
 server.tool(
   "edit_document",
-  "Edit a collaborative document — insert, update, or delete text blocks",
+  "Write text into a collaborative document. Supports markdown: # headings, - bullets, 1. numbered lists, **bold**, *italic*. The text is APPENDED to the end of the document by default. Use mode 'replace' to replace the entire document content.",
   {
     doc_url: z.string().describe("The document URL or ID"),
-    operations: z.array(
-      z.object({
-        type: z.enum(["insert", "update", "delete"]),
-        after_block: z
-          .string()
-          .optional()
-          .describe("Block ID to insert after, or omit for beginning"),
-        block_id: z.string().optional().describe("ID of block to modify (for update/delete)"),
-        block_type: z
-          .string()
-          .optional()
-          .describe(
-            "Block type for insert: paragraph, heading, bulletListItem, numberedListItem"
-          ),
-        text: z.string().optional().describe("Text content (for insert/update)"),
-      })
-    ),
+    content: z.string().describe("Markdown text to write. Use \\n for newlines, # for headings, - for bullets."),
+    mode: z
+      .enum(["append", "replace"])
+      .default("append")
+      .describe("'append' adds to the end (default), 'replace' replaces the entire document"),
   },
-  async ({ doc_url, operations }) => {
+  async ({ doc_url, content, mode }) => {
     const docId = extractDocId(doc_url);
+    const method = mode === "replace" ? "PUT" : "POST";
+    const url = `${API_BASE_URL}/api/v1/docs/${docId}/text`;
 
-    const apiOps = operations.map((op) => {
-      if (op.type === "insert") {
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
         return {
-          type: "insert" as const,
-          afterBlockId: op.after_block || null,
-          block: {
-            type: op.block_type || "paragraph",
-            text: op.text || "",
-          },
-        };
-      } else if (op.type === "update") {
-        return {
-          type: "update" as const,
-          blockId: op.block_id,
-          text: op.text || "",
-        };
-      } else {
-        return {
-          type: "delete" as const,
-          blockId: op.block_id,
+          content: [
+            {
+              type: "text" as const,
+              text: `Error editing document: ${data.error || JSON.stringify(data)}`,
+            },
+          ],
+          isError: true,
         };
       }
-    });
 
-    const res = await apiCall(`/docs/${docId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ author: "Claude", operations: apiOps }),
-    });
+      const blocksInfo = data.blocksAdded
+        ? `${data.blocksAdded} blocks added`
+        : data.blocksWritten
+        ? `${data.blocksWritten} blocks written`
+        : "done";
 
-    const result = await res.json();
-
-    if (!res.ok) {
       return {
         content: [
           {
             type: "text" as const,
-            text: `Error: ${result.error || JSON.stringify(result.errors)}`,
+            text: `Successfully ${mode === "replace" ? "replaced" : "appended"} content (${blocksInfo}). View at: ${API_BASE_URL}/doc/${docId}`,
           },
         ],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text" as const, text: `Network error: ${err}` }],
         isError: true,
       };
     }
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: `Successfully applied ${result.appliedOperations} operation(s).`,
-        },
-      ],
-    };
   }
 );
 
@@ -150,47 +127,35 @@ server.tool(
   },
   async ({ doc_url }) => {
     const docId = extractDocId(doc_url);
-    const res = await apiCall(`/docs/${docId}`);
+    const url = `${API_BASE_URL}/api/v1/docs/${docId}/text`;
 
-    if (!res.ok) {
-      const err = await res.json();
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const err = await res.text();
+        return {
+          content: [{ type: "text" as const, text: `Error: ${err}` }],
+          isError: true,
+        };
+      }
+
+      const data = await res.json();
       return {
-        content: [{ type: "text" as const, text: `Error: ${err.error || res.statusText}` }],
+        content: [
+          {
+            type: "text" as const,
+            text: `Document content:\n\n${data.content || "(empty)"}\n\nBlock count: ${data.blockCount || "unknown"}`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text" as const, text: `Network error: ${err}` }],
         isError: true,
       };
     }
-
-    const doc = await res.json();
-    const lines = doc.content.map(
-      (block: { id: string; type: string; text: string }) =>
-        `${block.id} | ${block.type} | ${block.text.substring(0, 100)}`
-    );
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: `Blocks in document "${doc.title}":\n\n${lines.join("\n")}`,
-        },
-      ],
-    };
   }
 );
-
-function getBlockPrefix(type: string, props?: Record<string, unknown>): string {
-  switch (type) {
-    case "heading": {
-      const level = (props?.level as number) || 1;
-      return "#".repeat(level) + " ";
-    }
-    case "bulletListItem":
-      return "- ";
-    case "numberedListItem":
-      return "1. ";
-    default:
-      return "";
-  }
-}
 
 async function main() {
   const transport = new StdioServerTransport();

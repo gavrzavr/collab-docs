@@ -4,18 +4,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const mcp_js_1 = require("@modelcontextprotocol/sdk/server/mcp.js");
 const stdio_js_1 = require("@modelcontextprotocol/sdk/server/stdio.js");
 const zod_1 = require("zod");
-const API_BASE_URL = process.env.API_BASE_URL || "http://localhost:3000";
-async function apiCall(path, options) {
-    const url = `${API_BASE_URL}/api/v1${path}`;
-    const res = await fetch(url, {
-        ...options,
-        headers: {
-            "Content-Type": "application/json",
-            ...options?.headers,
-        },
-    });
-    return res;
-}
+const API_BASE_URL = process.env.API_BASE_URL || "https://collab-docs-rose.vercel.app";
 function extractDocId(docUrl) {
     // Accept full URL like http://host/doc/abc123 or just the ID
     const match = docUrl.match(/\/doc\/([^/?#]+)/);
@@ -26,134 +15,121 @@ function extractDocId(docUrl) {
 }
 const server = new mcp_js_1.McpServer({
     name: "collab-docs",
-    version: "0.1.0",
+    version: "0.2.0",
 });
-server.tool("read_document", "Read the full content of a collaborative document", {
+server.tool("read_document", "Read the full content of a collaborative document. Accepts a URL like https://collab-docs-rose.vercel.app/doc/ABC123 or just the document ID.", {
     doc_url: zod_1.z.string().describe("The document URL or ID"),
 }, async ({ doc_url }) => {
     const docId = extractDocId(doc_url);
-    const res = await apiCall(`/docs/${docId}`);
-    if (!res.ok) {
-        const err = await res.json();
-        return {
-            content: [{ type: "text", text: `Error: ${err.error || res.statusText}` }],
-            isError: true,
-        };
-    }
-    const doc = await res.json();
-    let text = `# ${doc.title}\n\n`;
-    for (const block of doc.content) {
-        const prefix = getBlockPrefix(block.type, block.props);
-        text += `[${block.id}] ${prefix}${block.text}\n`;
-    }
-    return {
-        content: [{ type: "text", text }],
-    };
-});
-server.tool("edit_document", "Edit a collaborative document — insert, update, or delete text blocks", {
-    doc_url: zod_1.z.string().describe("The document URL or ID"),
-    operations: zod_1.z.array(zod_1.z.object({
-        type: zod_1.z.enum(["insert", "update", "delete"]),
-        after_block: zod_1.z
-            .string()
-            .optional()
-            .describe("Block ID to insert after, or omit for beginning"),
-        block_id: zod_1.z.string().optional().describe("ID of block to modify (for update/delete)"),
-        block_type: zod_1.z
-            .string()
-            .optional()
-            .describe("Block type for insert: paragraph, heading, bulletListItem, numberedListItem"),
-        text: zod_1.z.string().optional().describe("Text content (for insert/update)"),
-    })),
-}, async ({ doc_url, operations }) => {
-    const docId = extractDocId(doc_url);
-    const apiOps = operations.map((op) => {
-        if (op.type === "insert") {
+    const url = `${API_BASE_URL}/api/v1/docs/${docId}/text`;
+    try {
+        const res = await fetch(url);
+        if (!res.ok) {
+            const err = await res.text();
             return {
-                type: "insert",
-                afterBlockId: op.after_block || null,
-                block: {
-                    type: op.block_type || "paragraph",
-                    text: op.text || "",
-                },
+                content: [{ type: "text", text: `Error reading document: ${err}` }],
+                isError: true,
             };
         }
-        else if (op.type === "update") {
-            return {
-                type: "update",
-                blockId: op.block_id,
-                text: op.text || "",
-            };
-        }
-        else {
-            return {
-                type: "delete",
-                blockId: op.block_id,
-            };
-        }
-    });
-    const res = await apiCall(`/docs/${docId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ author: "Claude", operations: apiOps }),
-    });
-    const result = await res.json();
-    if (!res.ok) {
+        const data = await res.json();
+        const content = data.content || "(empty document)";
         return {
             content: [
                 {
                     type: "text",
-                    text: `Error: ${result.error || JSON.stringify(result.errors)}`,
+                    text: `Document ID: ${docId}\nURL: ${API_BASE_URL}/doc/${docId}\n\n---\n${content}\n---\n\nTo edit this document, use the edit_document tool with the same URL.`,
                 },
             ],
+        };
+    }
+    catch (err) {
+        return {
+            content: [{ type: "text", text: `Network error: ${err}` }],
             isError: true,
         };
     }
-    return {
-        content: [
-            {
-                type: "text",
-                text: `Successfully applied ${result.appliedOperations} operation(s).`,
-            },
-        ],
-    };
+});
+server.tool("edit_document", "Write text into a collaborative document. Supports markdown: # headings, - bullets, 1. numbered lists, **bold**, *italic*. The text is APPENDED to the end of the document by default. Use mode 'replace' to replace the entire document content.", {
+    doc_url: zod_1.z.string().describe("The document URL or ID"),
+    content: zod_1.z.string().describe("Markdown text to write. Use \\n for newlines, # for headings, - for bullets."),
+    mode: zod_1.z
+        .enum(["append", "replace"])
+        .default("append")
+        .describe("'append' adds to the end (default), 'replace' replaces the entire document"),
+}, async ({ doc_url, content, mode }) => {
+    const docId = extractDocId(doc_url);
+    const method = mode === "replace" ? "PUT" : "POST";
+    const url = `${API_BASE_URL}/api/v1/docs/${docId}/text`;
+    try {
+        const res = await fetch(url, {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `Error editing document: ${data.error || JSON.stringify(data)}`,
+                    },
+                ],
+                isError: true,
+            };
+        }
+        const blocksInfo = data.blocksAdded
+            ? `${data.blocksAdded} blocks added`
+            : data.blocksWritten
+                ? `${data.blocksWritten} blocks written`
+                : "done";
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: `Successfully ${mode === "replace" ? "replaced" : "appended"} content (${blocksInfo}). View at: ${API_BASE_URL}/doc/${docId}`,
+                },
+            ],
+        };
+    }
+    catch (err) {
+        return {
+            content: [{ type: "text", text: `Network error: ${err}` }],
+            isError: true,
+        };
+    }
 });
 server.tool("list_blocks", "List all blocks in the document with their IDs (useful before editing)", {
     doc_url: zod_1.z.string().describe("The document URL or ID"),
 }, async ({ doc_url }) => {
     const docId = extractDocId(doc_url);
-    const res = await apiCall(`/docs/${docId}`);
-    if (!res.ok) {
-        const err = await res.json();
+    const url = `${API_BASE_URL}/api/v1/docs/${docId}/text`;
+    try {
+        const res = await fetch(url);
+        if (!res.ok) {
+            const err = await res.text();
+            return {
+                content: [{ type: "text", text: `Error: ${err}` }],
+                isError: true,
+            };
+        }
+        const data = await res.json();
         return {
-            content: [{ type: "text", text: `Error: ${err.error || res.statusText}` }],
+            content: [
+                {
+                    type: "text",
+                    text: `Document content:\n\n${data.content || "(empty)"}\n\nBlock count: ${data.blockCount || "unknown"}`,
+                },
+            ],
+        };
+    }
+    catch (err) {
+        return {
+            content: [{ type: "text", text: `Network error: ${err}` }],
             isError: true,
         };
     }
-    const doc = await res.json();
-    const lines = doc.content.map((block) => `${block.id} | ${block.type} | ${block.text.substring(0, 100)}`);
-    return {
-        content: [
-            {
-                type: "text",
-                text: `Blocks in document "${doc.title}":\n\n${lines.join("\n")}`,
-            },
-        ],
-    };
 });
-function getBlockPrefix(type, props) {
-    switch (type) {
-        case "heading": {
-            const level = props?.level || 1;
-            return "#".repeat(level) + " ";
-        }
-        case "bulletListItem":
-            return "- ";
-        case "numberedListItem":
-            return "1. ";
-        default:
-            return "";
-    }
-}
 async function main() {
     const transport = new stdio_js_1.StdioServerTransport();
     await server.connect(transport);
