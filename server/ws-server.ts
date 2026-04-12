@@ -8,6 +8,9 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import http from "http";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z } from "zod";
 
 const PORT = Number(process.env.PORT) || Number(process.env.WS_PORT) || 1234;
 // On Railway with a Volume mounted at /app/data, use that for persistence.
@@ -311,6 +314,88 @@ function send(ws: WebSocket, message: Uint8Array) {
   }
 }
 
+// ─── MCP Server Factory ───────────────────────────────────────────────────
+// Creates a new MCP server instance with tools for reading and editing docs.
+// Each HTTP request gets its own instance (stateless mode).
+
+const VERCEL_URL = process.env.VERCEL_URL || "https://collab-docs-rose.vercel.app";
+
+function createMcpServer(): McpServer {
+  const mcp = new McpServer({
+    name: "CollabDocs",
+    version: "0.2.0",
+  });
+
+  mcp.tool(
+    "read_document",
+    "Read the content of a CollabDocs document. Returns the document text in markdown format.",
+    {
+      doc_url: z.string().describe("Document URL (e.g. https://collab-docs-rose.vercel.app/doc/ABC123) or just the document ID"),
+    },
+    async ({ doc_url }) => {
+      const docId = extractDocIdFromUrl(doc_url);
+      try {
+        const entry = getOrCreateDoc(docId);
+        const text = extractDocumentText(entry.ydoc);
+        return {
+          content: [{
+            type: "text" as const,
+            text: text
+              ? `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}):\n\n${text}`
+              : `Document (ID: ${docId}) is empty. Use edit_document to add content.`,
+          }],
+        };
+      } catch (e) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${e}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  mcp.tool(
+    "edit_document",
+    "Write content to a CollabDocs document. Supports markdown: # headings (H1-H3), - bullets, 1. numbered lists. Text is appended by default; use mode 'replace' to overwrite everything.",
+    {
+      doc_url: z.string().describe("Document URL or ID"),
+      content: z.string().describe("Markdown text to write. Use \\n for newlines."),
+      mode: z.enum(["append", "replace"]).default("append").describe("'append' adds to end (default), 'replace' overwrites entire document"),
+    },
+    async ({ doc_url, content, mode }) => {
+      const docId = extractDocIdFromUrl(doc_url);
+      try {
+        const entry = getOrCreateDoc(docId);
+        let count: number;
+        if (mode === "replace") {
+          count = replaceDocContent(entry.ydoc, content);
+        } else {
+          count = appendTextToDoc(entry.ydoc, content);
+        }
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Done! ${mode === "replace" ? "Replaced" : "Appended"} ${count} blocks. View: ${VERCEL_URL}/doc/${docId}`,
+          }],
+        };
+      } catch (e) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${e}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  return mcp;
+}
+
+function extractDocIdFromUrl(docUrl: string): string {
+  const match = docUrl.match(/\/doc\/([^/?#]+)/);
+  if (match) return match[1];
+  return docUrl.replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
 // ─── HTTP API for document metadata ────────────────────────────────────────
 
 function parseBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
@@ -329,8 +414,8 @@ function sendJson(res: http.ServerResponse, status: number, data: unknown) {
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, mcp-session-id",
   });
   res.end(JSON.stringify(data));
 }
@@ -343,8 +428,8 @@ const httpServer = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, mcp-session-id",
     });
     res.end();
     return;
@@ -458,6 +543,64 @@ const httpServer = http.createServer(async (req, res) => {
       res.writeHead(500);
       res.end(String(e));
     }
+    return;
+  }
+
+  // ─── MCP Remote Server (Streamable HTTP) ────────────────────────────────
+  // Claude and other AI agents connect here to read/edit documents.
+  // Stateless mode: each POST creates a fresh server+transport.
+  if (pathname === "/mcp") {
+    // CORS for MCP
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, mcp-session-id");
+    res.setHeader("Access-Control-Expose-Headers", "mcp-session-id");
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (req.method === "POST") {
+      try {
+        const mcpServer = createMcpServer();
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined, // stateless
+        });
+        res.on("close", () => {
+          transport.close().catch(() => {});
+          mcpServer.close().catch(() => {});
+        });
+        await mcpServer.connect(transport);
+        await transport.handleRequest(req, res);
+      } catch (e) {
+        console.error("MCP error:", e);
+        if (!res.headersSent) {
+          sendJson(res, 500, { error: "MCP server error" });
+        }
+      }
+      return;
+    }
+
+    if (req.method === "GET") {
+      // SSE stream not needed for stateless mode
+      res.writeHead(405, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "SSE not supported in stateless mode. Use POST." },
+        id: null,
+      }));
+      return;
+    }
+
+    if (req.method === "DELETE") {
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+
+    sendJson(res, 405, { error: "Method not allowed" });
     return;
   }
 

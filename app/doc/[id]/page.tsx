@@ -85,11 +85,19 @@ export default async function DocPage({ params }: { params: Promise<{ id: string
           <p>That is it — no API keys, no setup. Just open the CollabDocs GPT and paste your document link.</p>
 
           <h3>For Claude users:</h3>
-          <p>Claude can read and edit this document directly. Just tell Claude:</p>
-          <p>"Read this document: {baseUrl}/api/v1/docs/{id}/text"</p>
-          <p>"Append text by sending POST to {baseUrl}/api/v1/docs/{id}/text with plain text body"</p>
-          <p>"Replace all by sending PUT to {baseUrl}/api/v1/docs/{id}/text with plain text body"</p>
-          <p>Claude can use these API endpoints directly from chat. No special setup needed.</p>
+          <p>The best way to use CollabDocs with Claude is via the Remote MCP Server. This gives Claude full read/write access to all CollabDocs documents.</p>
+          <p><strong>Quick setup (one time, takes 30 seconds):</strong></p>
+          <p>1. Open Claude Settings → MCP Servers (or Claude Code settings)</p>
+          <p>2. Add a new Remote MCP server with URL: https://collab-docs-production.up.railway.app/mcp</p>
+          <p>3. Done! Now just paste any CollabDocs link in chat and Claude will read and edit it.</p>
+          <p><strong>After setup, just tell Claude:</strong></p>
+          <p>"Read document {baseUrl}/doc/{id}" — Claude reads it via MCP</p>
+          <p>"Write a summary into {baseUrl}/doc/{id}" — Claude edits it in real-time</p>
+          <p>Changes appear instantly in the browser for all connected users.</p>
+          <p><strong>Alternative (no setup):</strong> Claude can also use the REST API directly:</p>
+          <p>Read: GET {baseUrl}/api/v1/docs/{id}/text</p>
+          <p>Append: POST {baseUrl}/api/v1/docs/{id}/text with JSON body {`{"content": "text"}`}</p>
+          <p>Replace: PUT {baseUrl}/api/v1/docs/{id}/text with JSON body {`{"content": "text"}`}</p>
 
           <h3>For any other AI agent:</h3>
           <p>API endpoints (no authentication required):</p>
