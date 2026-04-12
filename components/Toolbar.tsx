@@ -102,7 +102,15 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
         {importing ? "Importing..." : "Import"}
       </button>
 
-      {/* 3. Export (dropdown) */}
+      {/* 3. Connect AI */}
+      <Link
+        href={`/connect?doc=${docId}`}
+        className="px-3 py-1.5 text-sm bg-orange-50 hover:bg-orange-100 text-orange-700 rounded-md transition-colors"
+      >
+        Connect AI
+      </Link>
+
+      {/* 4. Export (dropdown) */}
       <div className="relative" ref={exportRef}>
         <button
           onClick={() => setExportOpen(!exportOpen)}
