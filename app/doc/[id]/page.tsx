@@ -74,23 +74,32 @@ export default async function DocPage({ params }: { params: Promise<{ id: string
         </section>
 
         <section id="api-instructions">
-          <h3>How to read and edit this document via API (no auth required):</h3>
+          <h3>How to read and edit this document (no auth required):</h3>
 
-          <p>Read document as text:</p>
-          <code>GET {baseUrl}/api/v1/docs/{id}/text</code>
+          <h4>EASY WAY — just open these URLs (works with any AI that can browse):</h4>
 
-          <p>Append text to end of document:</p>
+          <p>1. Read this document:</p>
+          <code>{baseUrl}/api/v1/docs/{id}/text</code>
+
+          <p>2. Append text to end of document — open this URL (replace YOUR_TEXT):</p>
+          <code>{baseUrl}/api/v1/docs/{id}/append?text=YOUR_TEXT_HERE</code>
+          <p>Use %0A for newlines, %23 for #. Example:</p>
+          <code>{baseUrl}/api/v1/docs/{id}/append?text=Hello%20from%20AI%0AThis%20is%20a%20new%20paragraph</code>
+
+          <p>3. Replace entire document — open this URL:</p>
+          <code>{baseUrl}/api/v1/docs/{id}/replace?text=YOUR_NEW_CONTENT</code>
+          <p>Example with heading and bullets:</p>
+          <code>{baseUrl}/api/v1/docs/{id}/replace?text=%23%20My%20Title%0A-%20First%20item%0A-%20Second%20item</code>
+
+          <h4>ADVANCED WAY — POST/PUT requests (for agents with HTTP capabilities):</h4>
+
+          <p>Append (POST body = plain text/markdown):</p>
           <code>POST {baseUrl}/api/v1/docs/{id}/text</code>
-          <p>Send plain text or markdown in request body. # = headings, - = bullets, 1. = numbered lists.</p>
 
-          <p>Replace entire document:</p>
+          <p>Replace all (PUT body = plain text/markdown):</p>
           <code>PUT {baseUrl}/api/v1/docs/{id}/text</code>
 
-          <p>Example — read:</p>
-          <code>curl {baseUrl}/api/v1/docs/{id}/text</code>
-
-          <p>Example — append:</p>
-          <code>{`curl -X POST ${baseUrl}/api/v1/docs/${id}/text -H "Content-Type: text/plain" -d "Hello from AI"`}</code>
+          <p>Markdown format: # = heading, - = bullet, 1. = numbered list, plain text = paragraph.</p>
         </section>
       </article>
     </>
