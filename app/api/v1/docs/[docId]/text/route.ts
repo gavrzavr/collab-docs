@@ -73,12 +73,29 @@ function parseMarkdownLines(text: string): Array<{ type: string; text: string }>
  * Lines starting with # → headings, - → bullets, 1. → numbered lists.
  * Everything else → paragraphs.
  */
+/** Extract text from request body — supports plain text, JSON {"content":"..."}, or JSON {"text":"..."} */
+async function extractText(request: Request): Promise<string> {
+  const raw = await request.text();
+  // Try to parse as JSON (ChatGPT sends JSON with content or text field)
+  try {
+    const json = JSON.parse(raw);
+    if (typeof json === "string") return json;
+    if (json.content) return json.content;
+    if (json.text) return json.text;
+    if (json.body) return json.body;
+    if (json.markdown) return json.markdown;
+  } catch {
+    // Not JSON — treat as plain text
+  }
+  return raw;
+}
+
 export async function PUT(
   request: Request,
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
-  const text = await request.text();
+  const text = await extractText(request);
   const newBlocks = parseMarkdownLines(text);
 
   try {
@@ -128,7 +145,7 @@ export async function POST(
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
-  const text = await request.text();
+  const text = await extractText(request);
   const newBlocks = parseMarkdownLines(text);
 
   try {

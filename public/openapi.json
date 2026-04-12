@@ -22,7 +22,7 @@
             "name": "docId",
             "in": "path",
             "required": true,
-            "description": "The document ID (from the URL)",
+            "description": "The document ID (from the URL, e.g. for https://collab-docs-rose.vercel.app/doc/abc123 the docId is abc123)",
             "schema": {
               "type": "string"
             }
@@ -44,7 +44,7 @@
       "post": {
         "operationId": "appendToDocument",
         "summary": "Append text to the end of a document",
-        "description": "Adds new content to the end of the document without deleting existing content. Send plain text or markdown: lines starting with # become headings, - become bullet lists, 1. become numbered lists, everything else becomes paragraphs.",
+        "description": "Adds new content to the end of the document without deleting existing content. Send a JSON object with a 'content' field containing markdown text. Lines starting with # become headings, - become bullet lists, 1. become numbered lists, everything else becomes paragraphs. Use \\n for newlines.",
         "parameters": [
           {
             "name": "docId",
@@ -59,9 +59,16 @@
         "requestBody": {
           "required": true,
           "content": {
-            "text/plain": {
+            "application/json": {
               "schema": {
-                "type": "string"
+                "type": "object",
+                "required": ["content"],
+                "properties": {
+                  "content": {
+                    "type": "string",
+                    "description": "The markdown text to append. Use \\n for newlines. Example: \"# Heading\\nSome paragraph\\n- Bullet point\""
+                  }
+                }
               }
             }
           }
@@ -86,7 +93,7 @@
       "put": {
         "operationId": "replaceDocument",
         "summary": "Replace entire document content",
-        "description": "Deletes all existing content and replaces it with the provided text. Use markdown formatting: # for headings, - for bullets, 1. for numbered lists.",
+        "description": "Deletes all existing content and replaces it with the provided text. Send a JSON object with a 'content' field containing markdown. Use \\n for newlines. # for headings, - for bullets, 1. for numbered lists.",
         "parameters": [
           {
             "name": "docId",
@@ -101,9 +108,16 @@
         "requestBody": {
           "required": true,
           "content": {
-            "text/plain": {
+            "application/json": {
               "schema": {
-                "type": "string"
+                "type": "object",
+                "required": ["content"],
+                "properties": {
+                  "content": {
+                    "type": "string",
+                    "description": "The markdown text to write. Use \\n for newlines. Example: \"# Title\\nParagraph text\\n- Item 1\\n- Item 2\""
+                  }
+                }
               }
             }
           }
