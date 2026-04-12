@@ -10,7 +10,10 @@ import fs from "fs";
 import http from "http";
 
 const PORT = Number(process.env.PORT) || Number(process.env.WS_PORT) || 1234;
-const DB_PATH = path.join(process.cwd(), "data", "collab-docs.db");
+// On Railway with a Volume mounted at /app/data, use that for persistence.
+// Locally, fall back to ./data/ in the project directory.
+const DATA_DIR = process.env.DATA_DIR || (fs.existsSync("/app/data") ? "/app/data" : path.join(process.cwd(), "data"));
+const DB_PATH = path.join(DATA_DIR, "collab-docs.db");
 
 // Ensure data directory exists
 const dir = path.dirname(DB_PATH);
