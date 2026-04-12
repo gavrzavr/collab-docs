@@ -245,7 +245,6 @@ function createBlock(ydoc: Y.Doc, type: string, text: string, level?: number, st
   blockEl.setAttribute("textAlignment", style?.textAlignment || "left");
   if (type === "heading") {
     blockEl.setAttribute("level", String(level || 1));
-    blockEl.setAttribute("isToggleable", "false");
   }
   if (type === "checkListItem") {
     blockEl.setAttribute("checked", "false");
@@ -547,7 +546,7 @@ function createMcpServer(): McpServer {
         return {
           content: [{
             type: "text" as const,
-            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}), ${blocks.length} blocks:\n\n${lines.join("\n")}\n\nTo edit a specific block, use update_block with the block ID shown in [brackets]. To add new content at the end, use edit_document with mode "append". NEVER use mode "replace" unless the user explicitly asks to rewrite the entire document.`,
+            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}), ${blocks.length} blocks:\n\n${lines.join("\n")}\n\n--- EDITING INSTRUCTIONS ---\nUse update_block(block_id, text) to edit one block. Use insert_block to add new blocks. Use edit_document(mode="append") to add at the end. NEVER use "replace" unless asked.\n\nFORMATTING: Most text should be PARAGRAPHS (no prefix). Only use "- " for actual lists of 3+ items. Use **bold** for key terms. Use headings only for section titles.`,
           }],
         };
       } catch (e) {
@@ -561,10 +560,36 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "edit_document",
-    "Add new content to a CollabDocs document. Supports markdown and inline formatting: **bold**, *italic*, ~~strike~~, `code`, __underline__. By default appends to the end. Use mode 'replace' ONLY when the user explicitly asks to rewrite the entire document. For editing specific blocks, use update_block instead. IMPORTANT: Read the formatting_guide prompt first to learn best practices.",
+    `Write content to a CollabDocs document. IMPORTANT FORMATTING RULES:
+
+STRUCTURE: Use proper block types for each line:
+- Lines WITHOUT prefix = paragraph (body text, descriptions, notes)
+- # / ## / ### = headings (document structure ONLY, not for every line)
+- "- " = bullet list (ONLY for short items in a list of 3+)
+- "1. " = numbered list (ONLY for sequential steps)
+- "- [ ] " = checklist (ONLY for actionable tasks)
+
+COMMON MISTAKES TO AVOID:
+- Do NOT make every line a bullet point. Most text should be PARAGRAPHS (no prefix).
+- Do NOT use headings for regular content. Headings are for SECTION TITLES only.
+- Do NOT write one giant block. Split into multiple paragraphs with blank lines.
+- Do NOT overuse lists. A paragraph of 2-3 sentences is better than 3 bullet points.
+
+INLINE FORMATTING: **bold** for key terms, *italic* for emphasis, \`code\` for technical terms.
+
+EXAMPLE of good formatting:
+# Project Update
+Status report for Q2 2026.
+## Completed
+We finished the API migration ahead of schedule. **Performance improved by 40%**.
+- Migrated all endpoints to v2
+- Updated documentation
+- Deployed to production
+## Next Steps
+The frontend refactor starts next week. *John* will lead the effort.`,
     {
       doc_url: z.string().describe("Document URL or ID"),
-      content: z.string().describe("Markdown text. Supports: # headings, - bullets, 1. lists, [] checklists, **bold**, *italic*, ~~strike~~, `code`, __underline__"),
+      content: z.string().describe("Markdown text. NO prefix = paragraph. # = heading. - = bullet. 1. = numbered. - [ ] = checklist. **bold** *italic* `code`"),
       mode: z.enum(["append", "replace"]).default("append").describe("'append' adds to end (default). ONLY use 'replace' when user explicitly asks to rewrite the whole document."),
     },
     async ({ doc_url, content, mode }) => {
