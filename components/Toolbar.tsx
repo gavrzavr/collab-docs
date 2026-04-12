@@ -1,12 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 
 interface ToolbarProps {
   docId: string;
+  sessionUser?: { name: string; email: string; image?: string } | null;
 }
 
-export default function Toolbar({ docId }: ToolbarProps) {
+export default function Toolbar({ docId, sessionUser }: ToolbarProps) {
   const [copied, setCopied] = useState(false);
 
   async function copyLink() {
@@ -39,7 +41,9 @@ export default function Toolbar({ docId }: ToolbarProps) {
 
   return (
     <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-200 bg-white">
-      <div className="text-sm font-medium text-gray-700 mr-auto">CollabDocs</div>
+      <Link href={sessionUser ? "/dashboard" : "/"} className="text-sm font-medium text-gray-700 mr-auto hover:text-black transition-colors">
+        CollabDocs
+      </Link>
       <button
         onClick={copyLink}
         className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
@@ -58,6 +62,19 @@ export default function Toolbar({ docId }: ToolbarProps) {
       >
         Export .docx
       </button>
+      {sessionUser && (
+        <div className="flex items-center gap-2 ml-2 pl-2 border-l border-gray-200">
+          {sessionUser.image && (
+            <img
+              src={sessionUser.image}
+              alt={sessionUser.name}
+              className="w-7 h-7 rounded-full"
+              referrerPolicy="no-referrer"
+            />
+          )}
+          <span className="text-sm text-gray-600">{sessionUser.name}</span>
+        </div>
+      )}
     </div>
   );
 }

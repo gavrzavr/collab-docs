@@ -7,18 +7,52 @@ import Toolbar from "@/components/Toolbar";
 
 const Editor = dynamic(() => import("@/components/Editor"), { ssr: false });
 
+const COLORS = [
+  "#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A",
+  "#98D8C8", "#F7DC6F", "#BB8FCE", "#85C1E9",
+];
+
+function randomColor(): string {
+  return COLORS[Math.floor(Math.random() * COLORS.length)];
+}
+
 export default function DocPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const [user, setUser] = useState<{ name: string; color: string } | null>(null);
+  const [user, setUser] = useState<{ name: string; color: string; image?: string } | null>(null);
   const [checked, setChecked] = useState(false);
+  const [sessionUser, setSessionUser] = useState<{ name: string; email: string; image?: string } | null>(null);
 
   useEffect(() => {
-    const name = localStorage.getItem("collab-docs-name");
-    const color = localStorage.getItem("collab-docs-color");
-    if (name && color) {
-      setUser({ name, color });
-    }
-    setChecked(true);
+    // Check if user has an auth session
+    fetch("/api/auth/session")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.user?.name) {
+          // Authenticated user — use session data, skip NamePrompt
+          const color = localStorage.getItem("collab-docs-color") || randomColor();
+          localStorage.setItem("collab-docs-color", color);
+          setSessionUser(data.user);
+          setUser({ name: data.user.name, color, image: data.user.image });
+          setChecked(true);
+        } else {
+          // Guest — check localStorage
+          const name = localStorage.getItem("collab-docs-name");
+          const color = localStorage.getItem("collab-docs-color");
+          if (name && color) {
+            setUser({ name, color });
+          }
+          setChecked(true);
+        }
+      })
+      .catch(() => {
+        // Auth service unavailable — fall back to localStorage
+        const name = localStorage.getItem("collab-docs-name");
+        const color = localStorage.getItem("collab-docs-color");
+        if (name && color) {
+          setUser({ name, color });
+        }
+        setChecked(true);
+      });
   }, []);
 
   if (!checked) return null;
@@ -33,7 +67,7 @@ export default function DocPage({ params }: { params: Promise<{ id: string }> })
 
   return (
     <div className="flex flex-col h-screen">
-      <Toolbar docId={id} />
+      <Toolbar docId={id} sessionUser={sessionUser} />
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-[800px] mx-auto py-8">
           <Editor docId={id} userName={user.name} userColor={user.color} />

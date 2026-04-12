@@ -20,13 +20,17 @@ if (!fs.existsSync(dir)) {
 
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = OFF");
 db.exec(`
-  DROP TABLE IF EXISTS yjs_documents;
-  DROP TABLE IF EXISTS documents;
   CREATE TABLE IF NOT EXISTS yjs_documents (
     doc_id TEXT PRIMARY KEY,
     state BLOB
+  );
+  CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT 'Untitled',
+    owner_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
 
@@ -35,6 +39,37 @@ const messageAwareness = 1;
 
 // In-memory docs and their connections
 const docs = new Map<string, { ydoc: Y.Doc; awareness: awarenessProtocol.Awareness; conns: Set<WebSocket> }>();
+
+/** Extract first heading text from a Yjs doc for title */
+function extractTitle(ydoc: Y.Doc): string {
+  try {
+    const fragment = ydoc.getXmlFragment("blocknote");
+    for (let i = 0; i < fragment.length; i++) {
+      const child = fragment.get(i);
+      if (child instanceof Y.XmlElement && child.nodeName === "blockGroup") {
+        for (let j = 0; j < child.length; j++) {
+          const bc = child.get(j);
+          if (bc instanceof Y.XmlElement && bc.nodeName === "blockContainer") {
+            for (let k = 0; k < bc.length; k++) {
+              const block = bc.get(k);
+              if (block instanceof Y.XmlElement && block.nodeName === "heading") {
+                let text = "";
+                for (let l = 0; l < block.length; l++) {
+                  const t = block.get(l);
+                  if (t instanceof Y.XmlText) text += t.toJSON();
+                }
+                if (text.trim()) return text.trim();
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return "Untitled";
+}
 
 function getOrCreateDoc(docName: string) {
   let entry = docs.get(docName);
@@ -51,7 +86,7 @@ function getOrCreateDoc(docName: string) {
     Y.applyUpdate(ydoc, new Uint8Array(row.state));
   }
 
-  // Persist on updates (debounced)
+  // Persist on updates (debounced) + update title
   let persistTimeout: ReturnType<typeof setTimeout> | null = null;
   ydoc.on("update", () => {
     if (persistTimeout) clearTimeout(persistTimeout);
@@ -60,6 +95,12 @@ function getOrCreateDoc(docName: string) {
       db.prepare(
         "INSERT INTO yjs_documents (doc_id, state) VALUES (?, ?) ON CONFLICT(doc_id) DO UPDATE SET state = ?"
       ).run(docName, state, state);
+
+      // Update document title from first heading
+      const title = extractTitle(ydoc);
+      db.prepare(
+        "UPDATE documents SET title = ?, updated_at = datetime('now') WHERE id = ?"
+      ).run(title, docName);
     }, 1000);
   });
 
@@ -74,9 +115,94 @@ function send(ws: WebSocket, message: Uint8Array) {
   }
 }
 
-const httpServer = http.createServer((_req, res) => {
-  res.writeHead(200);
-  res.end("y-websocket server");
+// ─── HTTP API for document metadata ────────────────────────────────────────
+
+function parseBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+    req.on("end", () => {
+      try { resolve(body ? JSON.parse(body) : {}); }
+      catch { reject(new Error("Invalid JSON")); }
+    });
+    req.on("error", reject);
+  });
+}
+
+function sendJson(res: http.ServerResponse, status: number, data: unknown) {
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+  });
+  res.end(JSON.stringify(data));
+}
+
+const httpServer = http.createServer(async (req, res) => {
+  const url = new URL(req.url || "/", `http://${req.headers.host}`);
+  const pathname = url.pathname;
+
+  // CORS preflight
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    });
+    res.end();
+    return;
+  }
+
+  // POST /api/docs — create document
+  if (req.method === "POST" && pathname === "/api/docs") {
+    try {
+      const body = await parseBody(req);
+      const id = body.id as string;
+      const title = (body.title as string) || "Untitled";
+      const ownerId = (body.ownerId as string) || null;
+
+      if (!id) {
+        sendJson(res, 400, { error: "Missing document id" });
+        return;
+      }
+
+      db.prepare(
+        "INSERT OR IGNORE INTO documents (id, title, owner_id) VALUES (?, ?, ?)"
+      ).run(id, title, ownerId);
+
+      sendJson(res, 201, { id, title, ownerId });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
+  // GET /api/docs?ownerId=xxx — list documents by owner
+  if (req.method === "GET" && pathname === "/api/docs") {
+    const ownerId = url.searchParams.get("ownerId");
+    if (!ownerId) {
+      sendJson(res, 400, { error: "Missing ownerId query parameter" });
+      return;
+    }
+
+    const rows = db.prepare(
+      "SELECT id, title, owner_id, created_at, updated_at FROM documents WHERE owner_id = ? ORDER BY updated_at DESC"
+    ).all(ownerId);
+
+    sendJson(res, 200, { documents: rows });
+    return;
+  }
+
+  // Health check
+  if (req.method === "GET" && pathname === "/") {
+    res.writeHead(200);
+    res.end("y-websocket server");
+    return;
+  }
+
+  // 404
+  sendJson(res, 404, { error: "Not found" });
 });
 
 const wss = new WebSocketServer({ server: httpServer });
