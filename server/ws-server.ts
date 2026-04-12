@@ -240,20 +240,22 @@ function replaceDocContent(ydoc: Y.Doc, markdownText: string): number {
 function dumpXml(element: Y.XmlElement | Y.XmlText | Y.XmlFragment, indent = 0): string {
   const pad = "  ".repeat(indent);
   if (element instanceof Y.XmlText) return `${pad}[TEXT: "${element.toJSON()}"]\n`;
-  if (element instanceof Y.XmlFragment) {
-    let r = `${pad}[Fragment] (${element.length} children)\n`;
+  // Check XmlElement BEFORE XmlFragment (XmlElement extends XmlFragment)
+  if (element instanceof Y.XmlElement) {
+    const attrs = element.getAttributes();
+    const attrStr = Object.keys(attrs).length > 0 ? " " + Object.entries(attrs).map(([k, v]) => `${k}="${v}"`).join(" ") : "";
+    let r = `${pad}<${element.nodeName}${attrStr}>\n`;
     for (let i = 0; i < element.length; i++) {
       const c = element.get(i);
-      if (c instanceof Y.XmlElement || c instanceof Y.XmlText) r += dumpXml(c, indent + 1);
+      if (c instanceof Y.XmlElement || c instanceof Y.XmlText || c instanceof Y.XmlFragment) r += dumpXml(c, indent + 1);
     }
     return r;
   }
-  const attrs = element.getAttributes();
-  const attrStr = Object.keys(attrs).length > 0 ? " " + Object.entries(attrs).map(([k, v]) => `${k}="${v}"`).join(" ") : "";
-  let r = `${pad}<${element.nodeName}${attrStr}>\n`;
+  // Pure XmlFragment (root)
+  let r = `${pad}[Fragment] (${element.length} children)\n`;
   for (let i = 0; i < element.length; i++) {
     const c = element.get(i);
-    if (c instanceof Y.XmlElement || c instanceof Y.XmlText) r += dumpXml(c, indent + 1);
+    if (c instanceof Y.XmlElement || c instanceof Y.XmlText || c instanceof Y.XmlFragment) r += dumpXml(c, indent + 1);
   }
   return r;
 }
