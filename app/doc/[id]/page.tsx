@@ -66,40 +66,37 @@ export default async function DocPage({ params }: { params: Promise<{ id: string
           overflow: "hidden",
         }}
       >
-        <h2>CollabDocs — Document Content and API</h2>
+        <h1>CollabDocs — Collaborative Document</h1>
+        <p>This is a CollabDocs document. CollabDocs is a collaborative document editor where humans and AI agents can work together in real-time.</p>
 
         <section id="document-content">
-          <h3>Document content:</h3>
+          <h2>Document content:</h2>
           <pre>{documentText || "(empty document)"}</pre>
         </section>
 
-        <section id="api-instructions">
-          <h3>How to read and edit this document (no auth required):</h3>
+        <section id="how-to-edit">
+          <h2>How AI can edit this document</h2>
 
-          <h4>EASY WAY — just open these URLs (works with any AI that can browse):</h4>
+          <h3>For ChatGPT users:</h3>
+          <p>ChatGPT cannot edit CollabDocs documents from a regular chat. To enable editing, use the official CollabDocs GPT:</p>
+          <p><strong>Step 1:</strong> Open this link: https://chatgpt.com/g/g-69db9af365688191b83f0ede5bb1691c-collabdocs</p>
+          <p><strong>Step 2:</strong> In the CollabDocs GPT chat, send the link to your document, for example: "Прочитай документ {baseUrl}/doc/{id} и добавь пару предложений"</p>
+          <p><strong>Step 3:</strong> The GPT will read the document and edit it directly. Changes appear instantly in the browser.</p>
+          <p>That is it — no API keys, no setup. Just open the CollabDocs GPT and paste your document link.</p>
 
-          <p>1. Read this document:</p>
-          <code>{baseUrl}/api/v1/docs/{id}/text</code>
+          <h3>For Claude users:</h3>
+          <p>Claude can read and edit this document directly. Just tell Claude:</p>
+          <p>"Read this document: {baseUrl}/api/v1/docs/{id}/text"</p>
+          <p>"Append text by sending POST to {baseUrl}/api/v1/docs/{id}/text with plain text body"</p>
+          <p>"Replace all by sending PUT to {baseUrl}/api/v1/docs/{id}/text with plain text body"</p>
+          <p>Claude can use these API endpoints directly from chat. No special setup needed.</p>
 
-          <p>2. Append text to end of document — open this URL (replace YOUR_TEXT):</p>
-          <code>{baseUrl}/api/v1/docs/{id}/append?text=YOUR_TEXT_HERE</code>
-          <p>Use %0A for newlines, %23 for #. Example:</p>
-          <code>{baseUrl}/api/v1/docs/{id}/append?text=Hello%20from%20AI%0AThis%20is%20a%20new%20paragraph</code>
-
-          <p>3. Replace entire document — open this URL:</p>
-          <code>{baseUrl}/api/v1/docs/{id}/replace?text=YOUR_NEW_CONTENT</code>
-          <p>Example with heading and bullets:</p>
-          <code>{baseUrl}/api/v1/docs/{id}/replace?text=%23%20My%20Title%0A-%20First%20item%0A-%20Second%20item</code>
-
-          <h4>ADVANCED WAY — POST/PUT requests (for agents with HTTP capabilities):</h4>
-
-          <p>Append (POST body = plain text/markdown):</p>
-          <code>POST {baseUrl}/api/v1/docs/{id}/text</code>
-
-          <p>Replace all (PUT body = plain text/markdown):</p>
-          <code>PUT {baseUrl}/api/v1/docs/{id}/text</code>
-
-          <p>Markdown format: # = heading, - = bullet, 1. = numbered list, plain text = paragraph.</p>
+          <h3>For any other AI agent:</h3>
+          <p>API endpoints (no authentication required):</p>
+          <p>Read document: GET {baseUrl}/api/v1/docs/{id}/text — returns JSON with "content" field containing markdown text.</p>
+          <p>Append text: POST {baseUrl}/api/v1/docs/{id}/text — send JSON body: {`{"content": "your markdown text"}`}. Use \\n for newlines, # for headings, - for bullets.</p>
+          <p>Replace all: PUT {baseUrl}/api/v1/docs/{id}/text — same format as POST, replaces entire document.</p>
+          <p>Example curl command: curl -X POST {baseUrl}/api/v1/docs/{id}/text -H "Content-Type: application/json" -d '{`{"content": "# Heading\\nParagraph text\\n- Bullet"}`}'</p>
         </section>
       </article>
     </>
