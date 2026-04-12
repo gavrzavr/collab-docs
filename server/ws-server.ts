@@ -145,6 +145,10 @@ function parseMarkdown(text: string): Array<{ type: string; text: string; level?
     const headingMatch = trimmed.match(/^(#{1,3})\s+(.*)/);
     if (headingMatch) {
       return { type: "heading", text: headingMatch[2], level: headingMatch[1].length };
+    } else if (trimmed.startsWith("- [ ] ") || trimmed.startsWith("- [x] ") || trimmed.startsWith("[] ")) {
+      const checked = trimmed.includes("[x]");
+      const text = trimmed.replace(/^-?\s*\[[ x]?\]\s*/, "");
+      return { type: "checkListItem", text, checked };
     } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
       return { type: "bulletListItem", text: trimmed.slice(2) };
     } else if (/^\d+\.\s/.test(trimmed)) {
@@ -164,6 +168,66 @@ function generateBlockId(): string {
   return id + "-" + Date.now().toString(36);
 }
 
+/** Block styling options */
+interface BlockStyle {
+  textColor?: string;
+  backgroundColor?: string;
+  textAlignment?: string;
+}
+
+/** Parse inline markdown formatting into XmlText with attributes.
+ *  Supports: **bold**, *italic*, ~~strikethrough~~, `code`, __underline__
+ */
+function createFormattedText(text: string): Y.XmlText {
+  const xmlText = new Y.XmlText();
+  let pos = 0;
+
+  // Regex for inline formatting tokens
+  const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|~~(.+?)~~|`(.+?)`|__(.+?)__)/g;
+  let match;
+  let lastIndex = 0;
+
+  while ((match = regex.exec(text)) !== null) {
+    // Insert plain text before this match
+    if (match.index > lastIndex) {
+      const plain = text.slice(lastIndex, match.index);
+      xmlText.insert(pos, plain);
+      pos += plain.length;
+    }
+
+    if (match[2]) {
+      // **bold**
+      xmlText.insert(pos, match[2], { bold: true });
+      pos += match[2].length;
+    } else if (match[3]) {
+      // *italic*
+      xmlText.insert(pos, match[3], { italic: true });
+      pos += match[3].length;
+    } else if (match[4]) {
+      // ~~strikethrough~~
+      xmlText.insert(pos, match[4], { strike: true });
+      pos += match[4].length;
+    } else if (match[5]) {
+      // `code`
+      xmlText.insert(pos, match[5], { code: true });
+      pos += match[5].length;
+    } else if (match[6]) {
+      // __underline__
+      xmlText.insert(pos, match[6], { underline: true });
+      pos += match[6].length;
+    }
+
+    lastIndex = regex.lastIndex;
+  }
+
+  // Insert remaining plain text
+  if (lastIndex < text.length) {
+    xmlText.insert(pos, text.slice(lastIndex));
+  }
+
+  return xmlText;
+}
+
 /** Create a BlockNote-compatible blockContainer XML element.
  *  Must match exact structure that BlockNote creates:
  *  <blockContainer id="xxx">
@@ -171,21 +235,30 @@ function generateBlockId(): string {
  *      [XmlText: "content"]
  *  No inline-content wrapper — text goes directly into the block element.
  */
-function createBlock(ydoc: Y.Doc, type: string, text: string, level?: number): Y.XmlElement {
+function createBlock(ydoc: Y.Doc, type: string, text: string, level?: number, style?: BlockStyle): Y.XmlElement {
   const container = new Y.XmlElement("blockContainer");
   container.setAttribute("id", generateBlockId());
 
   const blockEl = new Y.XmlElement(type);
-  blockEl.setAttribute("backgroundColor", "default");
-  blockEl.setAttribute("textColor", "default");
-  blockEl.setAttribute("textAlignment", "left");
+  blockEl.setAttribute("backgroundColor", style?.backgroundColor || "default");
+  blockEl.setAttribute("textColor", style?.textColor || "default");
+  blockEl.setAttribute("textAlignment", style?.textAlignment || "left");
   if (type === "heading") {
     blockEl.setAttribute("level", String(level || 1));
     blockEl.setAttribute("isToggleable", "false");
   }
+  if (type === "checkListItem") {
+    blockEl.setAttribute("checked", "false");
+  }
 
-  // Text goes directly into the block element — NO inline-content wrapper
-  blockEl.insert(0, [new Y.XmlText(text)]);
+  // Use formatted text if it contains inline markdown, otherwise plain
+  const hasFormatting = /(\*\*.+?\*\*|\*.+?\*|~~.+?~~|`.+?`|__.+?__)/.test(text);
+  if (hasFormatting) {
+    blockEl.insert(0, [createFormattedText(text)]);
+  } else {
+    blockEl.insert(0, [new Y.XmlText(text)]);
+  }
+
   container.insert(0, [blockEl]);
   return container;
 }
@@ -313,17 +386,17 @@ function findBlockContainer(fragment: Y.XmlFragment, blockId: string): { contain
 }
 
 /** Update text of a specific block by ID */
-function updateBlockText(ydoc: Y.Doc, blockId: string, newText: string, newType?: string, newLevel?: number): boolean {
+function updateBlockText(ydoc: Y.Doc, blockId: string, newText: string, newType?: string, newLevel?: number, style?: BlockStyle): boolean {
   const fragment = ydoc.getXmlFragment("blocknote");
   const found = findBlockContainer(fragment, blockId);
   if (!found) return false;
 
   ydoc.transact(() => {
-    const { container, parent, index } = found;
+    const { parent, index } = found;
     // Remove old container and insert new one at same position
     parent.delete(index, 1);
     const type = newType || "paragraph";
-    const block = createBlock(ydoc, type, newText, newLevel);
+    const block = createBlock(ydoc, type, newText, newLevel, style);
     // Preserve the original block ID
     block.setAttribute("id", blockId);
     parent.insert(index, [block]);
@@ -346,12 +419,12 @@ function deleteBlock(ydoc: Y.Doc, blockId: string): boolean {
 }
 
 /** Insert a block after a specific block ID */
-function insertBlockAfter(ydoc: Y.Doc, afterBlockId: string, type: string, text: string, level?: number): string | null {
+function insertBlockAfter(ydoc: Y.Doc, afterBlockId: string, type: string, text: string, level?: number, style?: BlockStyle): string | null {
   const fragment = ydoc.getXmlFragment("blocknote");
   const found = findBlockContainer(fragment, afterBlockId);
   if (!found) return null;
 
-  const newBlock = createBlock(ydoc, type, text, level);
+  const newBlock = createBlock(ydoc, type, text, level, style);
   const newId = newBlock.getAttribute("id") || "";
 
   ydoc.transact(() => {
@@ -488,10 +561,10 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "edit_document",
-    "Add new content to a CollabDocs document. By default appends to the end. Use mode 'replace' ONLY when the user explicitly asks to rewrite the entire document. For editing specific blocks, use update_block instead.",
+    "Add new content to a CollabDocs document. Supports markdown and inline formatting: **bold**, *italic*, ~~strike~~, `code`, __underline__. By default appends to the end. Use mode 'replace' ONLY when the user explicitly asks to rewrite the entire document. For editing specific blocks, use update_block instead. IMPORTANT: Read the formatting_guide prompt first to learn best practices.",
     {
       doc_url: z.string().describe("Document URL or ID"),
-      content: z.string().describe("Markdown text to write. Use \\n for newlines, # for headings, - for bullets."),
+      content: z.string().describe("Markdown text. Supports: # headings, - bullets, 1. lists, [] checklists, **bold**, *italic*, ~~strike~~, `code`, __underline__"),
       mode: z.enum(["append", "replace"]).default("append").describe("'append' adds to end (default). ONLY use 'replace' when user explicitly asks to rewrite the whole document."),
     },
     async ({ doc_url, content, mode }) => {
@@ -521,15 +594,18 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "update_block",
-    "Update the text of a specific block in a CollabDocs document. Use read_document first to get block IDs. This edits a single block without touching the rest of the document.",
+    "Update a specific block in a CollabDocs document. Supports inline formatting: **bold**, *italic*, ~~strikethrough~~, `code`, __underline__. Also supports text/background colors and alignment. Use read_document first to get block IDs.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       block_id: z.string().describe("The block ID to update (from read_document output, shown in [brackets])"),
-      text: z.string().describe("New text for this block"),
-      block_type: z.string().optional().describe("New block type: paragraph, heading, bulletListItem, numberedListItem. If omitted, keeps current type."),
-      level: z.number().optional().describe("Heading level (1-3). Only used when block_type is 'heading'."),
+      text: z.string().describe("New text. Supports: **bold**, *italic*, ~~strike~~, `code`, __underline__"),
+      block_type: z.string().optional().describe("Block type: paragraph, heading, bulletListItem, numberedListItem, checkListItem"),
+      level: z.number().optional().describe("Heading level (1-3). Only for headings."),
+      text_color: z.string().optional().describe("Text color: default, gray, brown, red, orange, yellow, green, blue, purple, pink"),
+      background_color: z.string().optional().describe("Background color: default, gray, brown, red, orange, yellow, green, blue, purple, pink"),
+      text_alignment: z.string().optional().describe("Alignment: left, center, right"),
     },
-    async ({ doc_url, block_id, text, block_type, level }) => {
+    async ({ doc_url, block_id, text, block_type, level, text_color, background_color, text_alignment }) => {
       const docId = extractDocIdFromUrl(doc_url);
       try {
         const entry = getOrCreateDoc(docId);
@@ -543,7 +619,12 @@ function createMcpServer(): McpServer {
           if (!level && current?.level) level = current.level;
         }
 
-        const ok = updateBlockText(entry.ydoc, block_id, text, type, level);
+        const style: BlockStyle = {};
+        if (text_color) style.textColor = text_color;
+        if (background_color) style.backgroundColor = background_color;
+        if (text_alignment) style.textAlignment = text_alignment;
+
+        const ok = updateBlockText(entry.ydoc, block_id, text, type, level, style);
         if (!ok) {
           return {
             content: [{ type: "text" as const, text: `Block "${block_id}" not found. Use read_document to get current block IDs.` }],
@@ -594,19 +675,24 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "insert_block",
-    "Insert a new block after a specific block in a CollabDocs document. Use read_document first to get block IDs.",
+    "Insert a new block after a specific block. Supports inline formatting: **bold**, *italic*, ~~strike~~, `code`, __underline__. Also colors and alignment.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       after_block_id: z.string().describe("Insert the new block after this block ID"),
-      text: z.string().describe("Text content for the new block"),
-      block_type: z.string().default("paragraph").describe("Block type: paragraph, heading, bulletListItem, numberedListItem"),
+      text: z.string().describe("Text content. Supports: **bold**, *italic*, ~~strike~~, `code`, __underline__"),
+      block_type: z.string().default("paragraph").describe("Block type: paragraph, heading, bulletListItem, numberedListItem, checkListItem"),
       level: z.number().optional().describe("Heading level (1-3). Only for headings."),
+      text_color: z.string().optional().describe("Text color: default, gray, brown, red, orange, yellow, green, blue, purple, pink"),
+      background_color: z.string().optional().describe("Background color: default, gray, brown, red, orange, yellow, green, blue, purple, pink"),
     },
-    async ({ doc_url, after_block_id, text, block_type, level }) => {
+    async ({ doc_url, after_block_id, text, block_type, level, text_color, background_color }) => {
       const docId = extractDocIdFromUrl(doc_url);
       try {
         const entry = getOrCreateDoc(docId);
-        const newId = insertBlockAfter(entry.ydoc, after_block_id, block_type, text, level);
+        const style: BlockStyle = {};
+        if (text_color) style.textColor = text_color;
+        if (background_color) style.backgroundColor = background_color;
+        const newId = insertBlockAfter(entry.ydoc, after_block_id, block_type, text, level, style);
         if (!newId) {
           return {
             content: [{ type: "text" as const, text: `Block "${after_block_id}" not found.` }],
@@ -625,8 +711,116 @@ function createMcpServer(): McpServer {
     }
   );
 
+  // ─── MCP Prompt: Formatting Guide ────────────────────────────────────
+  mcp.prompt(
+    "formatting_guide",
+    "Comprehensive guide to CollabDocs formatting. Use this to create beautifully formatted documents.",
+    () => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: FORMATTING_GUIDE,
+        },
+      }],
+    })
+  );
+
   return mcp;
 }
+
+const FORMATTING_GUIDE = `
+# CollabDocs Formatting Guide
+
+You are a typography expert working with CollabDocs — a collaborative document editor. Use ALL available formatting to create beautiful, readable, well-structured documents.
+
+## Block Types
+
+| Type | Syntax | Use for |
+|------|--------|---------|
+| paragraph | Plain text | Body text |
+| heading | # H1, ## H2, ### H3 | Document structure (max 3 levels) |
+| bulletListItem | - text | Unordered lists |
+| numberedListItem | 1. text | Sequential steps, ranked items |
+| checkListItem | [] text | Todo lists, checklists |
+
+## Inline Formatting
+
+Use these within any block text:
+- **Bold**: **important text** — for key terms, emphasis
+- *Italic*: *subtle emphasis* — for names, titles, foreign words
+- ~~Strikethrough~~: ~~deleted text~~ — for corrections, removed items
+- \`Code\`: \`variable_name\` — for technical terms, code
+- __Underline__: __underlined text__ — for links, highlights
+
+Combine them: **bold and *italic*** works.
+
+## Block Styling
+
+When using update_block or creating blocks, you can set:
+
+### Text Colors
+Available: default, gray, brown, red, orange, yellow, green, blue, purple, pink
+
+Use colors purposefully:
+- **red** — warnings, errors, urgent items
+- **green** — success, completed, positive
+- **blue** — links, references, information
+- **orange** — caution, important notes
+- **gray** — secondary info, metadata, dates
+- **purple** — creative, special categories
+
+### Background Colors
+Same palette: default, gray, brown, red, orange, yellow, green, blue, purple, pink
+
+Use backgrounds for:
+- **yellow** background — highlights, key takeaways
+- **blue** background — info boxes, notes
+- **red** background — critical warnings
+- **green** background — success messages, tips
+
+### Text Alignment
+Available: left (default), center, right
+
+- **center** — titles, quotes, section dividers
+- **right** — dates, attribution, signatures
+
+## Typography Best Practices
+
+1. **Hierarchy**: Use H1 for document title (one per doc), H2 for main sections, H3 for subsections
+2. **Scannability**: Use bullet lists for 3+ related items, numbered for sequential steps
+3. **Emphasis**: Bold for key terms (sparingly), italic for nuance. Never bold entire paragraphs.
+4. **Color**: Use 1-2 accent colors per document. Too many colors = visual noise.
+5. **Whitespace**: Short paragraphs (2-4 sentences). One idea per block.
+6. **Structure**: Start sections with a clear heading, then context paragraph, then details.
+7. **Consistency**: Same formatting for same types of info throughout the document.
+
+## Examples of Good Formatting
+
+### Meeting Notes
+- H1: Meeting title
+- Gray text: Date, attendees
+- H2: each agenda topic
+- Bullet list: discussion points
+- **Bold**: decisions made
+- Checklist: action items with owners
+
+### Technical Documentation
+- H1: Feature name
+- H2: Overview, Setup, Usage, API, Troubleshooting
+- \`Code\` formatting for technical terms
+- Numbered lists for steps
+- Yellow background for important notes
+- Red text for warnings
+
+### Project Plan
+- H1: Project name
+- H2: Phases
+- H3: Tasks within phases
+- Checklists for deliverables
+- Green text for completed items
+- Orange text for at-risk items
+`.trim();
 
 function extractDocIdFromUrl(docUrl: string): string {
   const match = docUrl.match(/\/doc\/([^/?#]+)/);
