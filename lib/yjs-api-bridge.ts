@@ -206,8 +206,13 @@ function createBlockContainer(
   blockEl.setAttribute("backgroundColor", "default");
   blockEl.setAttribute("textColor", "default");
   blockEl.setAttribute("textAlignment", "left");
+
+  // BlockNote expects: blockElement > inline-content > Y.XmlText
+  const inlineContent = new Y.XmlElement("inline-content");
   const textNode = new Y.XmlText(text);
-  blockEl.insert(0, [textNode]);
+  inlineContent.insert(0, [textNode]);
+  blockEl.insert(0, [inlineContent]);
+
   container.insert(0, [blockEl]);
 
   return container;
