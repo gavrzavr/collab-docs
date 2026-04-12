@@ -74,20 +74,22 @@ function parseMarkdownLines(text: string): Array<{ type: string; text: string }>
  * Everything else → paragraphs.
  */
 /** Extract text from request body — supports plain text, JSON {"content":"..."}, or JSON {"text":"..."} */
-async function extractText(request: Request): Promise<string> {
+async function extractText(request: Request): Promise<{ text: string; debug: string }> {
   const raw = await request.text();
   // Try to parse as JSON (ChatGPT sends JSON with content or text field)
   try {
     const json = JSON.parse(raw);
-    if (typeof json === "string") return json;
-    if (json.content) return json.content;
-    if (json.text) return json.text;
-    if (json.body) return json.body;
-    if (json.markdown) return json.markdown;
+    if (typeof json === "string") return { text: json, debug: `json-string, raw=${raw.substring(0, 200)}` };
+    if (json.content) return { text: json.content, debug: `json.content, raw=${raw.substring(0, 200)}` };
+    if (json.text) return { text: json.text, debug: `json.text, raw=${raw.substring(0, 200)}` };
+    if (json.body) return { text: json.body, debug: `json.body, raw=${raw.substring(0, 200)}` };
+    if (json.markdown) return { text: json.markdown, debug: `json.markdown, raw=${raw.substring(0, 200)}` };
+    // Unknown JSON structure — return stringified
+    return { text: JSON.stringify(json), debug: `json-unknown, keys=${Object.keys(json).join(",")}, raw=${raw.substring(0, 200)}` };
   } catch {
     // Not JSON — treat as plain text
   }
-  return raw;
+  return { text: raw, debug: `plain-text, raw=${raw.substring(0, 200)}` };
 }
 
 export async function PUT(
@@ -95,7 +97,7 @@ export async function PUT(
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
-  const text = await extractText(request);
+  const { text, debug } = await extractText(request);
   const newBlocks = parseMarkdownLines(text);
 
   try {
@@ -128,6 +130,9 @@ export async function PUT(
       success: true,
       blocksWritten: newBlocks.length,
       applied: result.applied,
+      debug,
+      extractedText: text.substring(0, 200),
+      blocks: newBlocks.map(b => ({ type: b.type, text: b.text.substring(0, 50) })),
       errors: result.errors.length > 0 ? result.errors : undefined,
     });
   } catch (e) {
@@ -145,7 +150,7 @@ export async function POST(
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
-  const text = await extractText(request);
+  const { text, debug } = await extractText(request);
   const newBlocks = parseMarkdownLines(text);
 
   try {
@@ -177,6 +182,9 @@ export async function POST(
       success: true,
       blocksAppended: newBlocks.length,
       applied: result.applied,
+      debug,
+      extractedText: text.substring(0, 200),
+      blocks: newBlocks.map(b => ({ type: b.type, text: b.text.substring(0, 50) })),
       errors: result.errors.length > 0 ? result.errors : undefined,
     });
   } catch (e) {
