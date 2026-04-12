@@ -1,0 +1,130 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CollabDocs API",
+    "description": "API for reading and editing collaborative documents in CollabDocs. Use these endpoints to read document content, append text, or replace entire documents.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://collab-docs-rose.vercel.app",
+      "description": "Production server"
+    }
+  ],
+  "paths": {
+    "/api/v1/docs/{docId}/text": {
+      "get": {
+        "operationId": "readDocument",
+        "summary": "Read document content as plain text/markdown",
+        "description": "Returns the full content of a document as plain text with markdown formatting. Headings use #, bullet lists use -, numbered lists use 1.",
+        "parameters": [
+          {
+            "name": "docId",
+            "in": "path",
+            "required": true,
+            "description": "The document ID (from the URL)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Document content as plain text",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "appendToDocument",
+        "summary": "Append text to the end of a document",
+        "description": "Adds new content to the end of the document without deleting existing content. Send plain text or markdown: lines starting with # become headings, - become bullet lists, 1. become numbered lists, everything else becomes paragraphs.",
+        "parameters": [
+          {
+            "name": "docId",
+            "in": "path",
+            "required": true,
+            "description": "The document ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/plain": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "blocksAppended": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "replaceDocument",
+        "summary": "Replace entire document content",
+        "description": "Deletes all existing content and replaces it with the provided text. Use markdown formatting: # for headings, - for bullets, 1. for numbered lists.",
+        "parameters": [
+          {
+            "name": "docId",
+            "in": "path",
+            "required": true,
+            "description": "The document ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/plain": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "blocksWritten": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
