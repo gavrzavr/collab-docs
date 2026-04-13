@@ -104,12 +104,36 @@ function extractDocumentText(ydoc: Y.Doc): string {
     return text;
   }
 
+  function extractTableMarkdown(tableEl: Y.XmlElement): string {
+    const rows: string[][] = [];
+    for (let r = 0; r < tableEl.length; r++) {
+      const row = tableEl.get(r);
+      if (row instanceof Y.XmlElement && row.nodeName === "tableRow") {
+        const cells: string[] = [];
+        for (let c = 0; c < row.length; c++) {
+          const cell = row.get(c);
+          if (cell instanceof Y.XmlElement && cell.nodeName === "tableCell") {
+            cells.push(getTextContent(cell));
+          }
+        }
+        rows.push(cells);
+      }
+    }
+    if (rows.length === 0) return "";
+    const header = "| " + rows[0].join(" | ") + " |";
+    const separator = "| " + rows[0].map(() => "---").join(" | ") + " |";
+    const body = rows.slice(1).map(r => "| " + r.join(" | ") + " |").join("\n");
+    return [header, separator, body].filter(Boolean).join("\n");
+  }
+
   function walkBlockContainer(bc: Y.XmlElement) {
     for (let i = 0; i < bc.length; i++) {
       const child = bc.get(i);
       if (child instanceof Y.XmlElement) {
         if (child.nodeName === "blockGroup") {
           walkBlockGroup(child);
+        } else if (child.nodeName === "table") {
+          lines.push(extractTableMarkdown(child));
         } else {
           const text = getTextContent(child);
           const type = child.nodeName;
@@ -178,14 +202,14 @@ interface BlockStyle {
 }
 
 /** Parse inline markdown formatting into XmlText with attributes.
- *  Supports: **bold**, *italic*, ~~strikethrough~~, `code`, __underline__
+ *  Supports: **bold**, *italic*, ~~strikethrough~~, `code`, __underline__, [text](url)
  */
 function createFormattedText(text: string): Y.XmlText {
   const xmlText = new Y.XmlText();
   let pos = 0;
 
-  // Regex for inline formatting tokens
-  const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|~~(.+?)~~|`(.+?)`|__(.+?)__)/g;
+  // Regex for inline formatting tokens (link MUST be checked before bold/italic to avoid conflicts)
+  const regex = /(\[([^\]]+)\]\(([^)]+)\)|\*\*(.+?)\*\*|\*(.+?)\*|~~(.+?)~~|`(.+?)`|__(.+?)__)/g;
   let match;
   let lastIndex = 0;
 
@@ -193,30 +217,34 @@ function createFormattedText(text: string): Y.XmlText {
     // Insert plain text before this match
     if (match.index > lastIndex) {
       const plain = text.slice(lastIndex, match.index);
-      xmlText.insert(pos, plain);
+      xmlText.insert(pos, plain, {});
       pos += plain.length;
     }
 
-    if (match[2]) {
-      // **bold**
-      xmlText.insert(pos, match[2], { bold: true });
+    if (match[2] && match[3]) {
+      // [text](url) — link
+      xmlText.insert(pos, match[2], { link: match[3] });
       pos += match[2].length;
-    } else if (match[3]) {
-      // *italic*
-      xmlText.insert(pos, match[3], { italic: true });
-      pos += match[3].length;
     } else if (match[4]) {
-      // ~~strikethrough~~
-      xmlText.insert(pos, match[4], { strike: true });
+      // **bold**
+      xmlText.insert(pos, match[4], { bold: true });
       pos += match[4].length;
     } else if (match[5]) {
-      // `code`
-      xmlText.insert(pos, match[5], { code: true });
+      // *italic*
+      xmlText.insert(pos, match[5], { italic: true });
       pos += match[5].length;
     } else if (match[6]) {
-      // __underline__
-      xmlText.insert(pos, match[6], { underline: true });
+      // ~~strikethrough~~
+      xmlText.insert(pos, match[6], { strike: true });
       pos += match[6].length;
+    } else if (match[7]) {
+      // `code`
+      xmlText.insert(pos, match[7], { code: true });
+      pos += match[7].length;
+    } else if (match[8]) {
+      // __underline__
+      xmlText.insert(pos, match[8], { underline: true });
+      pos += match[8].length;
     }
 
     lastIndex = regex.lastIndex;
@@ -253,7 +281,7 @@ function createBlock(ydoc: Y.Doc, type: string, text: string, level?: number, st
   }
 
   // Use formatted text if it contains inline markdown, otherwise plain
-  const hasFormatting = /(\*\*.+?\*\*|\*.+?\*|~~.+?~~|`.+?`|__.+?__)/.test(text);
+  const hasFormatting = /(\[.+?\]\(.+?\)|\*\*.+?\*\*|\*.+?\*|~~.+?~~|`.+?`|__.+?__)/.test(text);
   if (hasFormatting) {
     blockEl.insert(0, [createFormattedText(text)]);
   } else {
@@ -336,6 +364,29 @@ function extractBlocksWithIds(ydoc: Y.Doc): Array<{ id: string; type: string; te
     return text;
   }
 
+  function extractTableText(tableEl: Y.XmlElement): string {
+    const rows: string[][] = [];
+    for (let r = 0; r < tableEl.length; r++) {
+      const row = tableEl.get(r);
+      if (row instanceof Y.XmlElement && row.nodeName === "tableRow") {
+        const cells: string[] = [];
+        for (let c = 0; c < row.length; c++) {
+          const cell = row.get(c);
+          if (cell instanceof Y.XmlElement && cell.nodeName === "tableCell") {
+            cells.push(getTextContent(cell));
+          }
+        }
+        rows.push(cells);
+      }
+    }
+    // Format as markdown-style table
+    if (rows.length === 0) return "(empty table)";
+    const header = "| " + rows[0].join(" | ") + " |";
+    const separator = "| " + rows[0].map(() => "---").join(" | ") + " |";
+    const body = rows.slice(1).map(r => "| " + r.join(" | ") + " |").join("\n");
+    return [header, separator, body].filter(Boolean).join("\n");
+  }
+
   function walkBlockGroup(bg: Y.XmlElement) {
     for (let i = 0; i < bg.length; i++) {
       const bc = bg.get(i);
@@ -346,6 +397,9 @@ function extractBlocksWithIds(ydoc: Y.Doc): Array<{ id: string; type: string; te
           if (child instanceof Y.XmlElement) {
             if (child.nodeName === "blockGroup") {
               walkBlockGroup(child);
+            } else if (child.nodeName === "table") {
+              const text = extractTableText(child);
+              blocks.push({ id, type: "table", text });
             } else {
               const text = getTextContent(child);
               const type = child.nodeName;
@@ -430,6 +484,77 @@ function insertBlockAfter(ydoc: Y.Doc, afterBlockId: string, type: string, text:
 
   ydoc.transact(() => {
     found.parent.insert(found.index + 1, [newBlock]);
+  });
+
+  return newId;
+}
+
+/** Create a table block from a 2D array of cell text */
+function createTableBlock(rows: string[][]): Y.XmlElement {
+  const container = new Y.XmlElement("blockContainer");
+  container.setAttribute("id", generateBlockId());
+
+  const table = new Y.XmlElement("table");
+
+  for (const rowData of rows) {
+    const row = new Y.XmlElement("tableRow");
+    for (const cellText of rowData) {
+      const cell = new Y.XmlElement("tableCell");
+      cell.setAttribute("colspan", "1");
+      cell.setAttribute("rowspan", "1");
+      const para = new Y.XmlElement("tableParagraph");
+      const hasFormatting = /(\[.+?\]\(.+?\)|\*\*.+?\*\*|\*.+?\*|~~.+?~~|`.+?`|__.+?__)/.test(cellText);
+      if (hasFormatting) {
+        para.insert(0, [createFormattedText(cellText)]);
+      } else {
+        para.insert(0, [new Y.XmlText(cellText)]);
+      }
+      cell.insert(0, [para]);
+      row.insert(row.length, [cell]);
+    }
+    table.insert(table.length, [row]);
+  }
+
+  container.insert(0, [table]);
+  return container;
+}
+
+/** Append a table to the document */
+function appendTable(ydoc: Y.Doc, rows: string[][]): string {
+  const fragment = ydoc.getXmlFragment("blocknote");
+  const tableBlock = createTableBlock(rows);
+  const blockId = tableBlock.getAttribute("id") || "";
+
+  ydoc.transact(() => {
+    let blockGroup: Y.XmlElement | null = null;
+    for (let i = 0; i < fragment.length; i++) {
+      const child = fragment.get(i);
+      if (child instanceof Y.XmlElement && child.nodeName === "blockGroup") {
+        blockGroup = child;
+        break;
+      }
+    }
+    if (!blockGroup) {
+      blockGroup = new Y.XmlElement("blockGroup");
+      fragment.insert(0, [blockGroup]);
+    }
+    blockGroup.insert(blockGroup.length, [tableBlock]);
+  });
+
+  return blockId;
+}
+
+/** Insert a table after a specific block */
+function insertTableAfter(ydoc: Y.Doc, afterBlockId: string, rows: string[][]): string | null {
+  const fragment = ydoc.getXmlFragment("blocknote");
+  const found = findBlockContainer(fragment, afterBlockId);
+  if (!found) return null;
+
+  const tableBlock = createTableBlock(rows);
+  const newId = tableBlock.getAttribute("id") || "";
+
+  ydoc.transact(() => {
+    found.parent.insert(found.index + 1, [tableBlock]);
   });
 
   return newId;
@@ -549,7 +674,7 @@ function createMcpServer(): McpServer {
         return {
           content: [{
             type: "text" as const,
-            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}), ${blocks.length} blocks:\n\n${lines.join("\n")}\n\n--- EDITING INSTRUCTIONS ---\nUse update_block(block_id, text) to edit one block. Use insert_block to add new blocks. Use edit_document(mode="append") to add at the end. NEVER use "replace" unless asked.\n\nFORMATTING: Most text should be PARAGRAPHS (no prefix). Only use "- " for actual lists of 3+ items. Use **bold** for key terms. Use headings only for section titles.`,
+            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}), ${blocks.length} blocks:\n\n${lines.join("\n")}\n\n--- EDITING INSTRUCTIONS ---\nUse update_block(block_id, text) to edit one block. Use insert_block to add new blocks. Use edit_document(mode="append") to add at the end. Use create_table for tables. NEVER use "replace" unless asked.\n\nFORMATTING: Most text should be PARAGRAPHS (no prefix). Only use "- " for actual lists of 3+ items. Use **bold** for key terms. Use [text](url) for links. Use headings only for section titles.`,
           }],
         };
       } catch (e) {
@@ -563,10 +688,10 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "edit_document",
-    "Write content to a CollabDocs document. Each line becomes a separate block. No prefix = paragraph, # = heading, - = bullet, 1. = numbered, - [ ] = checklist. Supports **bold**, *italic*, `code`, ~~strike~~, __underline__. Follow the formatting rules from server instructions.",
+    "Write content to a CollabDocs document. Each line becomes a separate block. No prefix = paragraph, # = heading, - = bullet, 1. = numbered, - [ ] = checklist. Supports **bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url). For tables use create_table tool instead. Follow the formatting rules from server instructions.",
     {
       doc_url: z.string().describe("Document URL or ID"),
-      content: z.string().describe("Markdown text. NO prefix = paragraph. # = heading. - = bullet. 1. = numbered. - [ ] = checklist. **bold** *italic* `code`"),
+      content: z.string().describe("Markdown text. NO prefix = paragraph. # = heading. - = bullet. 1. = numbered. - [ ] = checklist. **bold** *italic* `code` [text](url)"),
       mode: z.enum(["append", "replace"]).default("append").describe("'append' adds to end (default). ONLY use 'replace' when user explicitly asks to rewrite the whole document."),
     },
     async ({ doc_url, content, mode }) => {
@@ -596,11 +721,11 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "update_block",
-    "Update a specific block in a CollabDocs document. Supports inline formatting: **bold**, *italic*, ~~strikethrough~~, `code`, __underline__. Also supports text/background colors and alignment. Use read_document first to get block IDs.",
+    "Update a specific block in a CollabDocs document. Supports inline formatting: **bold**, *italic*, ~~strikethrough~~, `code`, __underline__, [text](url). Also supports text/background colors and alignment. Use read_document first to get block IDs.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       block_id: z.string().describe("The block ID to update (from read_document output, shown in [brackets])"),
-      text: z.string().describe("New text. Supports: **bold**, *italic*, ~~strike~~, `code`, __underline__"),
+      text: z.string().describe("New text. Supports: **bold**, *italic*, ~~strike~~, `code`, __underline__, [text](url)"),
       block_type: z.string().optional().describe("Block type: paragraph, heading, bulletListItem, numberedListItem, checkListItem"),
       level: z.number().optional().describe("Heading level (1-3). Only for headings."),
       text_color: z.string().optional().describe("Text color: default, gray, brown, red, orange, yellow, green, blue, purple, pink"),
@@ -677,11 +802,11 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "insert_block",
-    "Insert a new block after a specific block. Supports inline formatting: **bold**, *italic*, ~~strike~~, `code`, __underline__. Also colors and alignment.",
+    "Insert a new block after a specific block. Supports inline formatting: **bold**, *italic*, ~~strike~~, `code`, __underline__, [text](url). Also colors and alignment.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       after_block_id: z.string().describe("Insert the new block after this block ID"),
-      text: z.string().describe("Text content. Supports: **bold**, *italic*, ~~strike~~, `code`, __underline__"),
+      text: z.string().describe("Text content. Supports: **bold**, *italic*, ~~strike~~, `code`, __underline__, [text](url)"),
       block_type: z.string().default("paragraph").describe("Block type: paragraph, heading, bulletListItem, numberedListItem, checkListItem"),
       level: z.number().optional().describe("Heading level (1-3). Only for headings."),
       text_color: z.string().optional().describe("Text color: default, gray, brown, red, orange, yellow, green, blue, purple, pink"),
@@ -703,6 +828,51 @@ function createMcpServer(): McpServer {
         }
         return {
           content: [{ type: "text" as const, text: `Inserted new block ${newId} after ${after_block_id}. View: ${VERCEL_URL}/doc/${docId}` }],
+        };
+      } catch (e) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${e}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  mcp.tool(
+    "create_table",
+    "Create a table in a CollabDocs document. Provide rows as a 2D array of strings. First row is typically the header. Cell text supports inline formatting: **bold**, *italic*, [text](url), etc.",
+    {
+      doc_url: z.string().describe("Document URL or ID"),
+      rows: z.array(z.array(z.string())).describe('2D array of cell text. Example: [["Name","Score"],["Alice","95"],["Bob","87"]]'),
+      after_block_id: z.string().optional().describe("Insert table after this block ID. If omitted, appends to end of document."),
+    },
+    async ({ doc_url, rows, after_block_id }) => {
+      const docId = extractDocIdFromUrl(doc_url);
+      try {
+        if (!rows || rows.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: "Error: rows must have at least one row." }],
+            isError: true,
+          };
+        }
+        const entry = getOrCreateDoc(docId);
+        let tableId: string | null;
+        if (after_block_id) {
+          tableId = insertTableAfter(entry.ydoc, after_block_id, rows);
+          if (!tableId) {
+            return {
+              content: [{ type: "text" as const, text: `Block "${after_block_id}" not found. Use read_document to get block IDs.` }],
+              isError: true,
+            };
+          }
+        } else {
+          tableId = appendTable(entry.ydoc, rows);
+        }
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Created table (${rows.length} rows × ${rows[0].length} cols) with ID ${tableId}. View: ${VERCEL_URL}/doc/${docId}`,
+          }],
         };
       } catch (e) {
         return {
@@ -759,11 +929,19 @@ Each line in content becomes one block. The line prefix determines the type:
 - \`code\` → technical terms, values, commands
 - ~~strikethrough~~ → corrections, outdated info
 - __underline__ → links, call-to-action
+- [text](url) → clickable link (e.g. [Google](https://google.com))
 
 ## Block Styling (via update_block and insert_block parameters)
 - text_color: default, gray, brown, red, orange, yellow, green, blue, purple, pink
 - background_color: default, gray, brown, red, orange, yellow, green, blue, purple, pink
 - text_alignment: left, center, right
+
+## Tables
+Use the create_table tool to insert tables. Provide data as a 2D array of strings.
+- First row = header row
+- Cell text supports inline formatting: **bold**, *italic*, [text](url), etc.
+- Use tables for structured/comparative data (schedules, comparisons, specs, pricing)
+- Do NOT use tables when a simple list would suffice
 
 ## Color Semantics (use consistently!)
 - red text → warnings, critical, urgent
@@ -829,7 +1007,7 @@ Migration is 80% complete. Remaining endpoints will be migrated by April 30.
 - [ ] Launch marketing campaign — **Tom**, Apr 20
 - [x] Complete SOC2 audit — **Mike**, Done
 
-Notice: paragraphs for context, bullets for short items, headers for structure, bold for key data, checklists for action items.
+Notice: paragraphs for context, bullets for short items, headers for structure, bold for key data, checklists for action items, [links](url) for references. Use create_table for structured data like metrics tables.
 `.trim();
 
 const FORMATTING_GUIDE = MCP_INSTRUCTIONS;
