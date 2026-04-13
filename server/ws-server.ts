@@ -222,8 +222,8 @@ function createFormattedText(text: string): Y.XmlText {
     }
 
     if (match[2] && match[3]) {
-      // [text](url) — link
-      xmlText.insert(pos, match[2], { link: match[3] });
+      // [text](url) — link (y-prosemirror stores mark attrs as objects)
+      xmlText.insert(pos, match[2], { link: { href: match[3] } });
       pos += match[2].length;
     } else if (match[4]) {
       // **bold**
@@ -250,9 +250,9 @@ function createFormattedText(text: string): Y.XmlText {
     lastIndex = regex.lastIndex;
   }
 
-  // Insert remaining plain text
+  // Insert remaining plain text (explicit empty attrs to avoid inheriting previous formatting)
   if (lastIndex < text.length) {
-    xmlText.insert(pos, text.slice(lastIndex));
+    xmlText.insert(pos, text.slice(lastIndex), {});
   }
 
   return xmlText;
@@ -356,7 +356,28 @@ function extractBlocksWithIds(ydoc: Y.Doc): Array<{ id: string; type: string; te
     for (let i = 0; i < el.length; i++) {
       const child = el.get(i);
       if (child instanceof Y.XmlText) {
-        text += child.toJSON();
+        // Use toDelta to get clean text with formatting info
+        try {
+          const delta = child.toDelta();
+          for (const op of delta) {
+            if (typeof op.insert === "string") {
+              const attrs = op.attributes || {};
+              let t = op.insert;
+              if (attrs.bold) t = `**${t}**`;
+              if (attrs.italic) t = `*${t}*`;
+              if (attrs.strike) t = `~~${t}~~`;
+              if (attrs.code) t = `\`${t}\``;
+              if (attrs.underline) t = `__${t}__`;
+              if (attrs.link) {
+                const href = typeof attrs.link === "object" ? attrs.link.href : attrs.link;
+                t = `[${t}](${href})`;
+              }
+              text += t;
+            }
+          }
+        } catch {
+          text += child.toString().replace(/<[^>]+>/g, "");
+        }
       } else if (child instanceof Y.XmlElement) {
         text += getTextContent(child);
       }
@@ -490,9 +511,10 @@ function insertBlockAfter(ydoc: Y.Doc, afterBlockId: string, type: string, text:
 }
 
 /** Create a table block from a 2D array of cell text */
-function createTableBlock(rows: string[][]): Y.XmlElement {
+function createTableBlock(rows: string[][]): { element: Y.XmlElement; id: string } {
   const container = new Y.XmlElement("blockContainer");
-  container.setAttribute("id", generateBlockId());
+  const id = generateBlockId();
+  container.setAttribute("id", id);
 
   const table = new Y.XmlElement("table");
 
@@ -516,14 +538,13 @@ function createTableBlock(rows: string[][]): Y.XmlElement {
   }
 
   container.insert(0, [table]);
-  return container;
+  return { element: container, id };
 }
 
 /** Append a table to the document */
 function appendTable(ydoc: Y.Doc, rows: string[][]): string {
   const fragment = ydoc.getXmlFragment("blocknote");
-  const tableBlock = createTableBlock(rows);
-  const blockId = tableBlock.getAttribute("id") || "";
+  const { element: tableBlock, id: blockId } = createTableBlock(rows);
 
   ydoc.transact(() => {
     let blockGroup: Y.XmlElement | null = null;
@@ -550,8 +571,7 @@ function insertTableAfter(ydoc: Y.Doc, afterBlockId: string, rows: string[][]): 
   const found = findBlockContainer(fragment, afterBlockId);
   if (!found) return null;
 
-  const tableBlock = createTableBlock(rows);
-  const newId = tableBlock.getAttribute("id") || "";
+  const { element: tableBlock, id: newId } = createTableBlock(rows);
 
   ydoc.transact(() => {
     found.parent.insert(found.index + 1, [tableBlock]);
