@@ -796,7 +796,7 @@ Each line in content becomes one block. The line prefix determines the type:
 4. Do NOT bold entire paragraphs.
 5. Do NOT use more than 3 colors in one document.
 6. Do NOT use numbered lists for non-sequential items.
-7. Do NOT create toggle/collapsible headings.
+7. Do NOT create toggle/collapsible headings — they are DISABLED in this editor.
 8. Do NOT use "---" as a separator — use a heading instead.
 
 # WORKFLOW
