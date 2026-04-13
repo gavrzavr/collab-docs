@@ -275,6 +275,7 @@ function createBlock(ydoc: Y.Doc, type: string, text: string, level?: number, st
   blockEl.setAttribute("textAlignment", style?.textAlignment || "left");
   if (type === "heading") {
     blockEl.setAttribute("level", String(level || 1));
+    blockEl.setAttribute("isToggleable", "false");
   }
   if (type === "checkListItem") {
     blockEl.setAttribute("checked", "false");

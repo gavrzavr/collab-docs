@@ -44,10 +44,8 @@ body {
   display: none !important;
 }
 
-/* Disable toggle headings completely — hide toggle arrows */
-[data-is-toggleable="true"] > button,
-[data-is-toggleable] > [class*="toggle"],
-.bn-block-content[data-content-type="heading"] > button:first-child {
+/* Disable toggle headings completely — hide toggle arrows only */
+.bn-toggle-button {
   display: none !important;
 }
 

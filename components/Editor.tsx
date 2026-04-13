@@ -3,8 +3,10 @@
 import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
 
-import { useCreateBlockNote } from "@blocknote/react";
+import { useCreateBlockNote, FormattingToolbarController, FormattingToolbar, getFormattingToolbarItems, useBlockNoteEditor, useComponentsContext, useEditorState } from "@blocknote/react";
+import type { BlockTypeSelectItem } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
+import { RiText, RiH1, RiH2, RiH3, RiListUnordered, RiListOrdered, RiListCheck3, RiQuoteText } from "react-icons/ri";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import { useEffect, useRef, useState } from "react";
@@ -15,6 +17,53 @@ interface EditorProps {
   userColor: string;
   onSynced?: () => void;
   registerImportHtml?: (fn: (html: string) => void) => void;
+}
+
+// Custom BlockTypeSelect that handles Yjs string props (level: "1" vs 1)
+const items: BlockTypeSelectItem[] = [
+  { name: "Paragraph", type: "paragraph", icon: RiText },
+  { name: "Heading 1", type: "heading", props: { level: 1 }, icon: RiH1 },
+  { name: "Heading 2", type: "heading", props: { level: 2 }, icon: RiH2 },
+  { name: "Heading 3", type: "heading", props: { level: 3 }, icon: RiH3 },
+  { name: "Quote", type: "quote", icon: RiQuoteText },
+  { name: "Bullet List", type: "bulletListItem", icon: RiListUnordered },
+  { name: "Numbered List", type: "numberedListItem", icon: RiListOrdered },
+  { name: "Check List", type: "checkListItem", icon: RiListCheck3 },
+];
+
+function CollabBlockTypeSelect() {
+  const Components = useComponentsContext()!;
+  const editor = useBlockNoteEditor();
+  const selectedBlocks = useEditorState({
+    editor,
+    selector: ({ editor }: { editor: any }) =>
+      editor.getSelection()?.blocks || [editor.getTextCursorPosition().block],
+  });
+  const block = selectedBlocks[0];
+
+  const selectItems = items.map((item) => {
+    const Icon = item.icon;
+    const typesMatch = item.type === block.type;
+    // Use loose equality (==) to handle Yjs string/number mismatch
+    const propsMatch = Object.entries(item.props || {}).every(
+      ([k, v]) => v == block.props[k]
+    );
+    return {
+      text: item.name,
+      icon: <Icon size={16} />,
+      onClick: () => {
+        editor.focus();
+        for (const b of selectedBlocks) {
+          editor.updateBlock(b, { type: item.type as any, props: item.props as any });
+        }
+      },
+      isSelected: typesMatch && propsMatch,
+    };
+  });
+
+  if (!selectItems.some((i) => i.isSelected) || !editor.isEditable) return null;
+
+  return <Components.FormattingToolbar.Select className="bn-select" items={selectItems} />;
 }
 
 export default function Editor({ docId, userName, userColor, onSynced, registerImportHtml }: EditorProps) {
@@ -91,5 +140,20 @@ export default function Editor({ docId, userName, userColor, onSynced, registerI
     return null;
   }
 
-  return <BlockNoteView editor={editor} theme="light" />;
+  return (
+    <BlockNoteView editor={editor} theme="light" formattingToolbar={false}>
+      <FormattingToolbarController
+        formattingToolbar={() => {
+          const defaultItems = getFormattingToolbarItems();
+          // Replace default BlockTypeSelect (first item) with our Yjs-compatible version
+          return (
+            <FormattingToolbar>
+              <CollabBlockTypeSelect />
+              {defaultItems.slice(1)}
+            </FormattingToolbar>
+          );
+        }}
+      />
+    </BlockNoteView>
+  );
 }
