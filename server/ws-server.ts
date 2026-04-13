@@ -986,6 +986,8 @@ Use the create_table tool to insert tables. Provide data as a 2D array of string
 7. Use colors sparingly — 1-2 accent colors per document.
 8. Separate logical sections with a heading.
 9. Write each line as a separate entry — each becomes its own block.
+10. Use [text](url) for links — make text descriptive, not "click here".
+11. Use create_table for structured data with rows and columns.
 
 ## DO NOT:
 1. Do NOT make every line a bullet point. This is the #1 mistake.
@@ -1004,20 +1006,21 @@ Use the create_table tool to insert tables. Provide data as a 2D array of string
 4. Use update_block to fix specific blocks (change text, type, color, alignment)
 5. Use insert_block to add blocks between existing ones
 6. Use delete_block to remove unwanted blocks
-7. NEVER use mode "replace" unless the user explicitly asks to rewrite everything
+7. Use create_table for structured data (provide rows as 2D array of strings)
+8. NEVER use mode "replace" unless the user explicitly asks to rewrite everything
 
 # EXAMPLE: Well-formatted document
 
 # Quarterly Business Review
 Summary of Q1 2026 results and Q2 plans.
 ## Revenue
-Total revenue reached **$2.4M**, up 18% from Q4 2025. The growth was primarily driven by enterprise contracts signed in January.
+Total revenue reached **$2.4M**, up 18% from Q4 2025. The growth was primarily driven by enterprise contracts signed in January. See the [full revenue report](https://example.com/revenue) for details.
 Key highlights:
 - Enterprise ARR grew to **$1.8M** (+25%)
 - SMB segment stable at **$600K**
 - Churn rate decreased to **2.1%**
 ## Product Updates
-We shipped **14 features** this quarter, including the new dashboard and API v2.
+We shipped **14 features** this quarter, including the [new dashboard](https://example.com/dashboard) and [API v2](https://example.com/api).
 ### Dashboard Redesign
 The new dashboard reduced average task completion time by **34%**. User satisfaction scores improved from 3.2 to 4.1 out of 5.
 ### API v2
@@ -1027,7 +1030,9 @@ Migration is 80% complete. Remaining endpoints will be migrated by April 30.
 - [ ] Launch marketing campaign — **Tom**, Apr 20
 - [x] Complete SOC2 audit — **Mike**, Done
 
-Notice: paragraphs for context, bullets for short items, headers for structure, bold for key data, checklists for action items, [links](url) for references. Use create_table for structured data like metrics tables.
+NOTE ON TABLES: Use create_table tool with rows like [["Metric","Q1","Q2"],["Revenue","$2.4M","$2.8M"],["Users","12K","15K"]]. First row = header. Cells support **bold** and [links](url).
+
+Notice: paragraphs for context, bullets for short items, headers for structure, bold for key data, checklists for action items, [links](url) for references, create_table for structured data.
 `.trim();
 
 const FORMATTING_GUIDE = MCP_INSTRUCTIONS;
