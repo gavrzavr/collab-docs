@@ -694,7 +694,7 @@ function createMcpServer(): McpServer {
         return {
           content: [{
             type: "text" as const,
-            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}), ${blocks.length} blocks:\n\n${lines.join("\n")}\n\n--- EDITING INSTRUCTIONS ---\nUse update_block(block_id, text) to edit one block. Use insert_block to add new blocks. Use edit_document(mode="append") to add at the end. Use create_table for tables. NEVER use "replace" unless asked.\n\nFORMATTING: Most text should be PARAGRAPHS (no prefix). Only use "- " for actual lists of 3+ items. Use **bold** for key terms. Use [text](url) for links. Use headings only for section titles.`,
+            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}), ${blocks.length} blocks:\n\n${lines.join("\n")}\n\n--- EDITING INSTRUCTIONS ---\nUse update_block(block_id, text) to edit one block. Use insert_block to add new blocks. Use edit_document(mode="append") to add at the end. Use create_table for tables. NEVER use "replace" unless asked.\n\nFORMATTING: Most text should be PARAGRAPHS (no prefix). Only use "- " for actual lists of 3+ items. Use **bold** for key terms. Use [text](url) for links. Use headings only for section titles.\n\nCOLORS: CollabDocs supports text and background colors! Use update_block or insert_block with text_color (red, green, blue, orange, gray, purple, pink, brown, yellow) and background_color (same palette). Example: update_block(block_id="xxx", text="Warning!", text_color="red", background_color="yellow").`,
           }],
         };
       } catch (e) {
@@ -708,7 +708,7 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "edit_document",
-    "Write content to a CollabDocs document. Each line becomes a separate block. No prefix = paragraph, # = heading, - = bullet, 1. = numbered, - [ ] = checklist. Supports **bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url). For tables use create_table tool instead. Follow the formatting rules from server instructions.",
+    "Write content to a CollabDocs document. Each line becomes a separate block. No prefix = paragraph, # = heading, - = bullet, 1. = numbered, - [ ] = checklist. Supports **bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url). For tables use create_table. For COLORS: after writing, use update_block with text_color/background_color params (red, green, blue, orange, yellow, gray, purple, pink, brown).",
     {
       doc_url: z.string().describe("Document URL or ID"),
       content: z.string().describe("Markdown text. NO prefix = paragraph. # = heading. - = bullet. 1. = numbered. - [ ] = checklist. **bold** *italic* `code` [text](url)"),
@@ -727,7 +727,7 @@ function createMcpServer(): McpServer {
         return {
           content: [{
             type: "text" as const,
-            text: `Done! ${mode === "replace" ? "Replaced" : "Appended"} ${count} blocks. View: ${VERCEL_URL}/doc/${docId}`,
+            text: `Done! ${mode === "replace" ? "Replaced" : "Appended"} ${count} blocks. View: ${VERCEL_URL}/doc/${docId}\nTip: To add colors, use read_document to get block IDs, then update_block with text_color/background_color.`,
           }],
         };
       } catch (e) {
