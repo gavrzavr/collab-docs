@@ -977,16 +977,28 @@ Use the create_table tool to insert tables. Provide data as a 2D array of string
 - Use tables for structured/comparative data (schedules, comparisons, specs, pricing)
 - Do NOT use tables when a simple list would suffice
 
-## Color Semantics (use consistently!)
+## Colors (YES, CollabDocs FULLY supports colors!)
+Colors are set via update_block and insert_block parameters: text_color and background_color.
+Available colors: default, gray, brown, red, orange, yellow, green, blue, purple, pink.
+
+HOW TO ADD COLORS:
+1. Write content with edit_document first
+2. Use read_document to get block IDs
+3. Use update_block(block_id, text, text_color="red") or background_color="yellow" to colorize
+
+Color semantics (use consistently):
 - red text → warnings, critical, urgent
 - green text → success, completed, approved
 - blue text → info, references, links
 - orange text → caution, attention needed
 - gray text → metadata, secondary info, dates, notes
+- purple text → creative, unique, special
 - yellow background → highlight, key takeaway
 - blue background → info box, note
 - green background → success, tip
 - red background → critical warning
+
+IMPORTANT: Do NOT say "CollabDocs doesn't support colors" — it does! Use update_block or insert_block with text_color/background_color parameters.
 
 # FORMATTING RULES (CRITICAL — FOLLOW STRICTLY)
 
@@ -1017,11 +1029,17 @@ Use the create_table tool to insert tables. Provide data as a 2D array of string
 1. read_document first to see current content and block IDs
 2. Plan the document structure mentally (title → sections → content)
 3. Use edit_document with mode "append" for new content
-4. Use update_block to fix specific blocks (change text, type, color, alignment)
-5. Use insert_block to add blocks between existing ones
-6. Use delete_block to remove unwanted blocks
-7. Use create_table for structured data (provide rows as 2D array of strings)
-8. NEVER use mode "replace" unless the user explicitly asks to rewrite everything
+4. Use read_document again to get the new block IDs
+5. Use update_block to style blocks — add colors (text_color, background_color), change alignment, fix text
+6. Use insert_block to add blocks between existing ones (also supports colors)
+7. Use delete_block to remove unwanted blocks
+8. Use create_table for structured data (provide rows as 2D array of strings)
+9. NEVER use mode "replace" unless the user explicitly asks to rewrite everything
+
+COLOR WORKFLOW EXAMPLE:
+- Write: edit_document(content="## Important Warning\\nDo not delete the database.")
+- Read: read_document → get block IDs [abc123] and [def456]
+- Color: update_block(block_id="def456", text="Do not delete the database.", text_color="red", background_color="yellow")
 
 # EXAMPLE: Well-formatted document
 
@@ -1046,7 +1064,9 @@ Migration is 80% complete. Remaining endpoints will be migrated by April 30.
 
 NOTE ON TABLES: Use create_table tool with rows like [["Metric","Q1","Q2"],["Revenue","$2.4M","$2.8M"],["Users","12K","15K"]]. First row = header. Cells support **bold** and [links](url).
 
-Notice: paragraphs for context, bullets for short items, headers for structure, bold for key data, checklists for action items, [links](url) for references, create_table for structured data.
+NOTE ON COLORS: After writing content, use update_block with text_color/background_color to add visual hierarchy. Example: update_block(block_id, text, text_color="red") for warnings, background_color="yellow" for highlights, text_color="gray" for metadata.
+
+Notice: paragraphs for context, bullets for short items, headers for structure, bold for key data, checklists for action items, [links](url) for references, create_table for tables, update_block for colors.
 `.trim();
 
 const FORMATTING_GUIDE = MCP_INSTRUCTIONS;
