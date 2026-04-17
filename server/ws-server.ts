@@ -38,13 +38,35 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+  CREATE INDEX IF NOT EXISTS idx_documents_owner_updated
+    ON documents (owner_id, updated_at DESC);
 `);
+
+// Document IDs are user-controllable input (URL path segment). Restrict them
+// to the same alphabet that the UI generates (nanoid-style) so nothing can
+// collide with SQL parameters, filesystem paths, or MCP routing.
+const DOC_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+function isValidDocId(id: string): boolean {
+  return DOC_ID_PATTERN.test(id);
+}
+function assertValidDocId(id: string): void {
+  if (!isValidDocId(id)) {
+    throw new Error(`Invalid document ID: ${JSON.stringify(id)}`);
+  }
+}
 
 const messageSync = 0;
 const messageAwareness = 1;
 
 // In-memory docs and their connections
-const docs = new Map<string, { ydoc: Y.Doc; awareness: awarenessProtocol.Awareness; conns: Set<WebSocket> }>();
+interface DocEntry {
+  ydoc: Y.Doc;
+  awareness: awarenessProtocol.Awareness;
+  conns: Set<WebSocket>;
+  persistTimeout: ReturnType<typeof setTimeout> | null;
+  persistNow: () => void;
+}
+const docs = new Map<string, DocEntry>();
 
 /** Extract first heading text from a Yjs doc for title */
 function extractTitle(ydoc: Y.Doc): string {
@@ -605,9 +627,9 @@ function dumpXml(element: Y.XmlElement | Y.XmlText | Y.XmlFragment, indent = 0):
   return r;
 }
 
-function getOrCreateDoc(docName: string) {
-  let entry = docs.get(docName);
-  if (entry) return entry;
+function getOrCreateDoc(docName: string): DocEntry {
+  const existing = docs.get(docName);
+  if (existing) return existing;
 
   const ydoc = new Y.Doc();
   const awareness = new awarenessProtocol.Awareness(ydoc);
@@ -620,27 +642,40 @@ function getOrCreateDoc(docName: string) {
     Y.applyUpdate(ydoc, new Uint8Array(row.state));
   }
 
-  // Persist on updates (debounced) + update title
-  let persistTimeout: ReturnType<typeof setTimeout> | null = null;
-  const persistDoc = () => {
-    const state = Buffer.from(Y.encodeStateAsUpdate(ydoc));
-    db.prepare(
-      "INSERT INTO yjs_documents (doc_id, state) VALUES (?, ?) ON CONFLICT(doc_id) DO UPDATE SET state = ?"
-    ).run(docName, state, state);
+  const persistNow = () => {
+    try {
+      const state = Buffer.from(Y.encodeStateAsUpdate(ydoc));
+      db.prepare(
+        "INSERT INTO yjs_documents (doc_id, state) VALUES (?, ?) ON CONFLICT(doc_id) DO UPDATE SET state = ?"
+      ).run(docName, state, state);
 
-    // Update document title from first heading
-    const title = extractTitle(ydoc);
-    db.prepare(
-      "UPDATE documents SET title = ?, updated_at = datetime('now') WHERE id = ?"
-    ).run(title, docName);
+      const title = extractTitle(ydoc);
+      db.prepare(
+        "UPDATE documents SET title = ?, updated_at = datetime('now') WHERE id = ?"
+      ).run(title, docName);
+    } catch (e) {
+      console.error(`Failed to persist doc ${docName}:`, e);
+    }
   };
 
+  const entry: DocEntry = {
+    ydoc,
+    awareness,
+    conns: new Set(),
+    persistTimeout: null,
+    persistNow,
+  };
+
+  // Persist on updates (debounced). The timer lives on the entry so cleanup
+  // can clear it without leaving a pending write against a destroyed ydoc.
   ydoc.on("update", () => {
-    if (persistTimeout) clearTimeout(persistTimeout);
-    persistTimeout = setTimeout(persistDoc, 500);
+    if (entry.persistTimeout) clearTimeout(entry.persistTimeout);
+    entry.persistTimeout = setTimeout(() => {
+      entry.persistTimeout = null;
+      persistNow();
+    }, 500);
   });
 
-  entry = { ydoc, awareness, conns: new Set() };
   docs.set(docName, entry);
   return entry;
 }
@@ -1074,8 +1109,9 @@ const FORMATTING_GUIDE = MCP_INSTRUCTIONS;
 
 function extractDocIdFromUrl(docUrl: string): string {
   const match = docUrl.match(/\/doc\/([^/?#]+)/);
-  if (match) return match[1];
-  return docUrl.replace(/^\/+/, "").replace(/\/+$/, "");
+  const id = match ? match[1] : docUrl.replace(/^\/+/, "").replace(/\/+$/, "");
+  assertValidDocId(id);
+  return id;
 }
 
 // ─── HTTP API for document metadata ────────────────────────────────────────
@@ -1303,6 +1339,11 @@ const wss = new WebSocketServer({ server: httpServer });
 wss.on("connection", (ws, req) => {
   // Extract doc name from URL path, e.g., /docId
   const docName = (req.url || "/").slice(1).split("?")[0] || "default";
+  if (!isValidDocId(docName)) {
+    console.warn(`Rejected WS connection with invalid docId: ${JSON.stringify(docName)}`);
+    ws.close(1008, "Invalid document ID");
+    return;
+  }
   const entry = getOrCreateDoc(docName);
   entry.conns.add(ws);
 
@@ -1387,16 +1428,20 @@ wss.on("connection", (ws, req) => {
     entry.awareness.off("update", awarenessChangeHandler);
     awarenessProtocol.removeAwarenessStates(entry.awareness, [entry.ydoc.clientID], null);
 
-    // Cleanup empty docs after a delay
+    // Cleanup empty docs after a delay.
+    // Re-check from `docs` (not the captured `entry`) so a doc that was
+    // reloaded during the grace period isn't destroyed.
     if (entry.conns.size === 0) {
       setTimeout(() => {
         const current = docs.get(docName);
-        if (current && current.conns.size === 0) {
-          // Final persist
-          persistDoc();
-          entry.ydoc.destroy();
-          docs.delete(docName);
+        if (!current || current.conns.size > 0) return;
+        if (current.persistTimeout) {
+          clearTimeout(current.persistTimeout);
+          current.persistTimeout = null;
         }
+        current.persistNow();
+        current.ydoc.destroy();
+        docs.delete(docName);
       }, 30000);
     }
   });
