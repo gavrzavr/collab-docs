@@ -1115,22 +1115,25 @@ const httpServer = http.createServer(async (req, res) => {
   // the 500 ms debounce. Safe to call even if the doc isn't in memory.
   // Protected by INTERNAL_SECRET; bridge sends it in `x-internal-secret`.
   if (req.method === "POST" && pathname.startsWith("/internal/flush/")) {
+    const docId = pathname.slice("/internal/flush/".length);
     const expected = process.env.INTERNAL_SECRET;
     if (expected) {
       const got = req.headers["x-internal-secret"];
       if (got !== expected) {
+        console.log(`[flush] 403 docId=${docId} reason=${got ? "bad_secret" : "missing_secret"}`);
         sendJson(res, 403, { error: "forbidden" });
         return;
       }
     }
-    const docId = pathname.slice("/internal/flush/".length);
     if (!isValidDocId(docId)) {
+      console.log(`[flush] 400 docId=${JSON.stringify(docId)} reason=invalid_id`);
       sendJson(res, 400, { error: "invalid doc id" });
       return;
     }
     const entry = docs.get(docId);
     if (!entry) {
       // Not in memory — nothing to flush (it's already on disk or doesn't exist).
+      console.log(`[flush] 200 docId=${docId} flushed=false reason=not_in_memory`);
       sendJson(res, 200, { flushed: false, reason: "not_in_memory" });
       return;
     }
@@ -1139,6 +1142,7 @@ const httpServer = http.createServer(async (req, res) => {
       entry.persistTimeout = null;
     }
     entry.persistNow();
+    console.log(`[flush] 200 docId=${docId} flushed=true`);
     sendJson(res, 200, { flushed: true });
     return;
   }
