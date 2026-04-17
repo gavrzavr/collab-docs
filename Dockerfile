@@ -12,7 +12,7 @@ RUN npm ci
 
 # Copy source
 COPY server/ ./server/
-COPY lib/db.ts ./lib/db.ts
+COPY lib/ ./lib/
 COPY tsconfig.json ./
 
 # Create data directory for SQLite
