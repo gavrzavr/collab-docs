@@ -11,6 +11,11 @@ import http from "http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+import {
+  extractBlocks,
+  extractDocumentMarkdown as sharedExtractDocumentMarkdown,
+  extractTitle as sharedExtractTitle,
+} from "../lib/yjs-blocks";
 
 const PORT = Number(process.env.PORT) || Number(process.env.WS_PORT) || 1234;
 // On Railway with a Volume mounted at /app/data, use that for persistence.
@@ -68,121 +73,11 @@ interface DocEntry {
 }
 const docs = new Map<string, DocEntry>();
 
-/** Extract first heading text from a Yjs doc for title */
-function extractTitle(ydoc: Y.Doc): string {
-  try {
-    const fragment = ydoc.getXmlFragment("blocknote");
-    for (let i = 0; i < fragment.length; i++) {
-      const child = fragment.get(i);
-      if (child instanceof Y.XmlElement && child.nodeName === "blockGroup") {
-        for (let j = 0; j < child.length; j++) {
-          const bc = child.get(j);
-          if (bc instanceof Y.XmlElement && bc.nodeName === "blockContainer") {
-            for (let k = 0; k < bc.length; k++) {
-              const block = bc.get(k);
-              if (block instanceof Y.XmlElement && block.nodeName === "heading") {
-                let text = "";
-                for (let l = 0; l < block.length; l++) {
-                  const t = block.get(l);
-                  if (t instanceof Y.XmlText) text += t.toJSON();
-                }
-                if (text.trim()) return text.trim();
-              }
-            }
-          }
-        }
-      }
-    }
-  } catch {
-    // ignore
-  }
-  return "Untitled";
-}
-
-/** Extract all text from a Yjs doc as markdown */
-function extractDocumentText(ydoc: Y.Doc): string {
-  const fragment = ydoc.getXmlFragment("blocknote");
-  const lines: string[] = [];
-
-  function walkBlockGroup(bg: Y.XmlElement) {
-    for (let i = 0; i < bg.length; i++) {
-      const bc = bg.get(i);
-      if (bc instanceof Y.XmlElement && bc.nodeName === "blockContainer") {
-        walkBlockContainer(bc);
-      }
-    }
-  }
-
-  function getTextContent(el: Y.XmlElement): string {
-    let text = "";
-    for (let i = 0; i < el.length; i++) {
-      const child = el.get(i);
-      if (child instanceof Y.XmlText) {
-        text += child.toJSON();
-      } else if (child instanceof Y.XmlElement) {
-        text += getTextContent(child);
-      }
-    }
-    return text;
-  }
-
-  function extractTableMarkdown(tableEl: Y.XmlElement): string {
-    const rows: string[][] = [];
-    for (let r = 0; r < tableEl.length; r++) {
-      const row = tableEl.get(r);
-      if (row instanceof Y.XmlElement && row.nodeName === "tableRow") {
-        const cells: string[] = [];
-        for (let c = 0; c < row.length; c++) {
-          const cell = row.get(c);
-          if (cell instanceof Y.XmlElement && cell.nodeName === "tableCell") {
-            cells.push(getTextContent(cell));
-          }
-        }
-        rows.push(cells);
-      }
-    }
-    if (rows.length === 0) return "";
-    const header = "| " + rows[0].join(" | ") + " |";
-    const separator = "| " + rows[0].map(() => "---").join(" | ") + " |";
-    const body = rows.slice(1).map(r => "| " + r.join(" | ") + " |").join("\n");
-    return [header, separator, body].filter(Boolean).join("\n");
-  }
-
-  function walkBlockContainer(bc: Y.XmlElement) {
-    for (let i = 0; i < bc.length; i++) {
-      const child = bc.get(i);
-      if (child instanceof Y.XmlElement) {
-        if (child.nodeName === "blockGroup") {
-          walkBlockGroup(child);
-        } else if (child.nodeName === "table") {
-          lines.push(extractTableMarkdown(child));
-        } else {
-          const text = getTextContent(child);
-          const type = child.nodeName;
-          if (type === "heading") {
-            const level = child.getAttribute("level") || "1";
-            lines.push("#".repeat(Number(level)) + " " + text);
-          } else if (type === "bulletListItem") {
-            lines.push("- " + text);
-          } else if (type === "numberedListItem") {
-            lines.push("1. " + text);
-          } else {
-            lines.push(text);
-          }
-        }
-      }
-    }
-  }
-
-  for (let i = 0; i < fragment.length; i++) {
-    const child = fragment.get(i);
-    if (child instanceof Y.XmlElement && child.nodeName === "blockGroup") {
-      walkBlockGroup(child);
-    }
-  }
-
-  return lines.join("\n");
-}
+// Document-level text extraction lives in lib/yjs-blocks.ts (shared with the
+// Next.js REST bridge). Re-export locally for backwards compatibility with
+// call sites in this file.
+const extractTitle = sharedExtractTitle;
+const extractDocumentText = sharedExtractDocumentMarkdown;
 
 /** Parse markdown into block descriptors */
 function parseMarkdown(text: string): Array<{ type: string; text: string; level?: number }> {
@@ -370,101 +265,7 @@ function replaceDocContent(ydoc: Y.Doc, markdownText: string): number {
 }
 
 /** Extract blocks with IDs for block-level editing */
-function extractBlocksWithIds(ydoc: Y.Doc): Array<{ id: string; type: string; text: string; level?: number }> {
-  const fragment = ydoc.getXmlFragment("blocknote");
-  const blocks: Array<{ id: string; type: string; text: string; level?: number }> = [];
-
-  function getTextContent(el: Y.XmlElement): string {
-    let text = "";
-    for (let i = 0; i < el.length; i++) {
-      const child = el.get(i);
-      if (child instanceof Y.XmlText) {
-        // Use toDelta to get clean text with formatting info
-        try {
-          const delta = child.toDelta();
-          for (const op of delta) {
-            if (typeof op.insert === "string") {
-              const attrs = op.attributes || {};
-              let t = op.insert;
-              if (attrs.bold) t = `**${t}**`;
-              if (attrs.italic) t = `*${t}*`;
-              if (attrs.strike) t = `~~${t}~~`;
-              if (attrs.code) t = `\`${t}\``;
-              if (attrs.underline) t = `__${t}__`;
-              if (attrs.link) {
-                const href = typeof attrs.link === "object" ? attrs.link.href : attrs.link;
-                t = `[${t}](${href})`;
-              }
-              text += t;
-            }
-          }
-        } catch {
-          text += child.toString().replace(/<[^>]+>/g, "");
-        }
-      } else if (child instanceof Y.XmlElement) {
-        text += getTextContent(child);
-      }
-    }
-    return text;
-  }
-
-  function extractTableText(tableEl: Y.XmlElement): string {
-    const rows: string[][] = [];
-    for (let r = 0; r < tableEl.length; r++) {
-      const row = tableEl.get(r);
-      if (row instanceof Y.XmlElement && row.nodeName === "tableRow") {
-        const cells: string[] = [];
-        for (let c = 0; c < row.length; c++) {
-          const cell = row.get(c);
-          if (cell instanceof Y.XmlElement && cell.nodeName === "tableCell") {
-            cells.push(getTextContent(cell));
-          }
-        }
-        rows.push(cells);
-      }
-    }
-    // Format as markdown-style table
-    if (rows.length === 0) return "(empty table)";
-    const header = "| " + rows[0].join(" | ") + " |";
-    const separator = "| " + rows[0].map(() => "---").join(" | ") + " |";
-    const body = rows.slice(1).map(r => "| " + r.join(" | ") + " |").join("\n");
-    return [header, separator, body].filter(Boolean).join("\n");
-  }
-
-  function walkBlockGroup(bg: Y.XmlElement) {
-    for (let i = 0; i < bg.length; i++) {
-      const bc = bg.get(i);
-      if (bc instanceof Y.XmlElement && bc.nodeName === "blockContainer") {
-        const id = bc.getAttribute("id") || "";
-        for (let j = 0; j < bc.length; j++) {
-          const child = bc.get(j);
-          if (child instanceof Y.XmlElement) {
-            if (child.nodeName === "blockGroup") {
-              walkBlockGroup(child);
-            } else if (child.nodeName === "table") {
-              const text = extractTableText(child);
-              blocks.push({ id, type: "table", text });
-            } else {
-              const text = getTextContent(child);
-              const type = child.nodeName;
-              const level = type === "heading" ? Number(child.getAttribute("level") || "1") : undefined;
-              blocks.push({ id, type, text, level });
-            }
-          }
-        }
-      }
-    }
-  }
-
-  for (let i = 0; i < fragment.length; i++) {
-    const child = fragment.get(i);
-    if (child instanceof Y.XmlElement && child.nodeName === "blockGroup") {
-      walkBlockGroup(child);
-    }
-  }
-
-  return blocks;
-}
+const extractBlocksWithIds = extractBlocks;
 
 /** Find a blockContainer by its ID and return it with parent info */
 function findBlockContainer(fragment: Y.XmlFragment, blockId: string): { container: Y.XmlElement; parent: Y.XmlElement; index: number } | null {
@@ -692,6 +493,25 @@ function send(ws: WebSocket, message: Uint8Array) {
 
 const VERCEL_URL = process.env.VERCEL_URL || "https://collab-docs-rose.vercel.app";
 
+/** Build an MCP error result with a structured code the model can read.
+ *  Output format: `[code: <code>] <human message>` + isError=true.
+ *  Codes: `not_found`, `invalid_input`, `internal`. */
+function mcpError(code: "not_found" | "invalid_input" | "internal", message: string) {
+  return {
+    content: [{ type: "text" as const, text: `[code: ${code}] ${message}` }],
+    isError: true,
+  };
+}
+
+function mcpErrorFromException(e: unknown) {
+  const message = e instanceof Error ? e.message : String(e);
+  // Invalid docId validation throws a specific message we can surface cleanly.
+  if (/Invalid document ID/i.test(message)) {
+    return mcpError("invalid_input", message);
+  }
+  return mcpError("internal", message);
+}
+
 function createMcpServer(): McpServer {
   const mcp = new McpServer({
     name: "CollabDocs",
@@ -734,10 +554,7 @@ function createMcpServer(): McpServer {
           }],
         };
       } catch (e) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${e}` }],
-          isError: true,
-        };
+        return mcpErrorFromException(e);
       }
     }
   );
@@ -767,10 +584,7 @@ function createMcpServer(): McpServer {
           }],
         };
       } catch (e) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${e}` }],
-          isError: true,
-        };
+        return mcpErrorFromException(e);
       }
     }
   );
@@ -809,19 +623,13 @@ function createMcpServer(): McpServer {
 
         const ok = updateBlockText(entry.ydoc, block_id, text, type, level, style);
         if (!ok) {
-          return {
-            content: [{ type: "text" as const, text: `Block "${block_id}" not found. Use read_document to get current block IDs.` }],
-            isError: true,
-          };
+          return mcpError("not_found", `Block "${block_id}" not found. Use read_document to get current block IDs.`);
         }
         return {
           content: [{ type: "text" as const, text: `Updated block ${block_id}. View: ${VERCEL_URL}/doc/${docId}` }],
         };
       } catch (e) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${e}` }],
-          isError: true,
-        };
+        return mcpErrorFromException(e);
       }
     }
   );
@@ -839,19 +647,13 @@ function createMcpServer(): McpServer {
         const entry = getOrCreateDoc(docId);
         const ok = deleteBlock(entry.ydoc, block_id);
         if (!ok) {
-          return {
-            content: [{ type: "text" as const, text: `Block "${block_id}" not found.` }],
-            isError: true,
-          };
+          return mcpError("not_found", `Block "${block_id}" not found.`);
         }
         return {
           content: [{ type: "text" as const, text: `Deleted block ${block_id}. View: ${VERCEL_URL}/doc/${docId}` }],
         };
       } catch (e) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${e}` }],
-          isError: true,
-        };
+        return mcpErrorFromException(e);
       }
     }
   );
@@ -877,19 +679,13 @@ function createMcpServer(): McpServer {
         if (background_color) style.backgroundColor = background_color;
         const newId = insertBlockAfter(entry.ydoc, after_block_id, block_type, text, level, style);
         if (!newId) {
-          return {
-            content: [{ type: "text" as const, text: `Block "${after_block_id}" not found.` }],
-            isError: true,
-          };
+          return mcpError("not_found", `Block "${after_block_id}" not found. Use read_document to get current block IDs.`);
         }
         return {
           content: [{ type: "text" as const, text: `Inserted new block ${newId} after ${after_block_id}. View: ${VERCEL_URL}/doc/${docId}` }],
         };
       } catch (e) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${e}` }],
-          isError: true,
-        };
+        return mcpErrorFromException(e);
       }
     }
   );
@@ -906,20 +702,14 @@ function createMcpServer(): McpServer {
       const docId = extractDocIdFromUrl(doc_url);
       try {
         if (!rows || rows.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "Error: rows must have at least one row." }],
-            isError: true,
-          };
+          return mcpError("invalid_input", "rows must have at least one row.");
         }
         const entry = getOrCreateDoc(docId);
         let tableId: string | null;
         if (after_block_id) {
           tableId = insertTableAfter(entry.ydoc, after_block_id, rows);
           if (!tableId) {
-            return {
-              content: [{ type: "text" as const, text: `Block "${after_block_id}" not found. Use read_document to get block IDs.` }],
-              isError: true,
-            };
+            return mcpError("not_found", `Block "${after_block_id}" not found. Use read_document to get current block IDs.`);
           }
         } else {
           tableId = appendTable(entry.ydoc, rows);
@@ -931,10 +721,7 @@ function createMcpServer(): McpServer {
           }],
         };
       } catch (e) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${e}` }],
-          isError: true,
-        };
+        return mcpErrorFromException(e);
       }
     }
   );
@@ -1320,6 +1107,39 @@ const httpServer = http.createServer(async (req, res) => {
     }
 
     sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  // Internal: force an immediate persist of a document.
+  // Used by the Next.js REST bridge so it doesn't have to sleep waiting for
+  // the 500 ms debounce. Safe to call even if the doc isn't in memory.
+  // Protected by INTERNAL_SECRET; bridge sends it in `x-internal-secret`.
+  if (req.method === "POST" && pathname.startsWith("/internal/flush/")) {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    }
+    const docId = pathname.slice("/internal/flush/".length);
+    if (!isValidDocId(docId)) {
+      sendJson(res, 400, { error: "invalid doc id" });
+      return;
+    }
+    const entry = docs.get(docId);
+    if (!entry) {
+      // Not in memory — nothing to flush (it's already on disk or doesn't exist).
+      sendJson(res, 200, { flushed: false, reason: "not_in_memory" });
+      return;
+    }
+    if (entry.persistTimeout) {
+      clearTimeout(entry.persistTimeout);
+      entry.persistTimeout = null;
+    }
+    entry.persistNow();
+    sendJson(res, 200, { flushed: true });
     return;
   }
 

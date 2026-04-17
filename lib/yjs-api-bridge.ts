@@ -4,6 +4,41 @@ import WebSocket from "ws";
 
 const WS_URL = process.env.WS_URL || (process.env.NEXT_PUBLIC_WS_URL ? process.env.NEXT_PUBLIC_WS_URL : "ws://localhost:1234");
 
+/** Derive the HTTP origin from the ws:// URL so we can hit /internal/flush. */
+function httpOrigin(wsUrl: string): string {
+  try {
+    const u = new URL(wsUrl);
+    u.protocol = u.protocol === "wss:" ? "https:" : "http:";
+    u.pathname = "";
+    u.search = "";
+    u.hash = "";
+    return u.toString().replace(/\/$/, "");
+  } catch {
+    return "http://localhost:1234";
+  }
+}
+
+async function flushDoc(docId: string): Promise<void> {
+  const origin = httpOrigin(WS_URL);
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (process.env.INTERNAL_SECRET) {
+    headers["x-internal-secret"] = process.env.INTERNAL_SECRET;
+  }
+  try {
+    await fetch(`${origin}/internal/flush/${encodeURIComponent(docId)}`, {
+      method: "POST",
+      headers,
+      body: "{}",
+      // 2s hard ceiling — the flush itself is a single SQLite write.
+      signal: AbortSignal.timeout(2000),
+    });
+  } catch (err) {
+    // Non-fatal: the WS server will still persist via the 500 ms debounce
+    // and the 30 s idle-cleanup final flush. Log and move on.
+    console.warn(`[yjs-api-bridge] flush(${docId}) failed:`, err);
+  }
+}
+
 interface BlockData {
   id: string;
   type: string;
@@ -41,9 +76,12 @@ export async function withYDoc<T>(
     await waitForSync(provider);
     const fragment = ydoc.getXmlFragment("blocknote");
     const result = fn(ydoc, fragment);
-    // Wait for the update to propagate to the WS server and be persisted.
-    // The WS server debounces persistence at 500ms, so we need to wait longer.
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // Give the WS client a moment to transmit our update over TCP, then ask
+    // the server to flush immediately instead of waiting for the 500 ms debounce.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await flushDoc(docId);
+
     return result;
   } finally {
     provider.destroy();
