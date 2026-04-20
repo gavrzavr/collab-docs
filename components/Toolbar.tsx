@@ -16,9 +16,32 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
   const [mintingView, setMintingView] = useState(false);
   const [importing, setImporting] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const exportRef = useRef<HTMLDivElement>(null);
   const shareRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  async function handleSignOut() {
+    // NextAuth's POST /api/auth/signout requires a CSRF token. Same
+    // approach as app/dashboard/page.tsx.
+    try {
+      const csrfRes = await fetch("/api/auth/csrf");
+      const { csrfToken } = await csrfRes.json();
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = "/api/auth/signout";
+      const input = document.createElement("input");
+      input.name = "csrfToken";
+      input.value = csrfToken;
+      form.appendChild(input);
+      document.body.appendChild(form);
+      form.submit();
+    } catch (err) {
+      console.error("Sign-out failed:", err);
+      alert("Could not sign out.");
+    }
+  }
 
   async function copyEditLink() {
     const url = `${window.location.origin}/doc/${docId}`;
@@ -221,16 +244,42 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
       </div>
 
       {sessionUser && (
-        <div className="flex items-center gap-2 ml-1 pl-2 sm:ml-2 border-l border-gray-200 shrink-0">
-          {sessionUser.image && (
-            <img
-              src={sessionUser.image}
-              alt={sessionUser.name}
-              className="w-7 h-7 rounded-full shrink-0"
-              referrerPolicy="no-referrer"
-            />
+        <div className="relative shrink-0 ml-1 pl-2 sm:ml-2 border-l border-gray-200" ref={userMenuRef}>
+          <button
+            onClick={() => setUserMenuOpen((v) => !v)}
+            className="flex items-center gap-2 rounded-md hover:bg-gray-100 px-1.5 py-1 transition-colors"
+            aria-label="Account menu"
+          >
+            {sessionUser.image && (
+              <img
+                src={sessionUser.image}
+                alt={sessionUser.name}
+                className="w-7 h-7 rounded-full shrink-0"
+                referrerPolicy="no-referrer"
+              />
+            )}
+            <span className="hidden md:inline text-sm text-gray-600">{sessionUser.name}</span>
+            <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {userMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setUserMenuOpen(false)} />
+              <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20 min-w-[220px]">
+                <div className="px-4 py-2 border-b border-gray-100">
+                  <div className="text-sm font-medium text-gray-900 truncate">{sessionUser.name}</div>
+                  <div className="text-xs text-gray-500 truncate">{sessionUser.email}</div>
+                </div>
+                <button
+                  onClick={handleSignOut}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors rounded-b-md"
+                >
+                  Sign out
+                </button>
+              </div>
+            </>
           )}
-          <span className="hidden md:inline text-sm text-gray-600">{sessionUser.name}</span>
         </div>
       )}
     </div>
