@@ -43,12 +43,38 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
     }
   }
 
-  async function copyEditLink() {
+  function copyEditLink() {
     const url = `${window.location.origin}/doc/${docId}`;
-    await navigator.clipboard.writeText(url);
+    copyToClipboard(url);
     setShareOpen(false);
     setCopied("edit");
     setTimeout(() => setCopied(null), 2000);
+  }
+
+  // Safari-safe clipboard copy. After an `await fetch(...)` Safari drops
+  // the user-gesture token, so plain `navigator.clipboard.writeText()`
+  // throws NotAllowedError. Three fallbacks in order:
+  //   1. execCommand("copy") on a throwaway textarea (works sync, no gesture check)
+  //   2. navigator.clipboard.writeText (works in Chrome/Firefox)
+  //   3. prompt() so the user can copy manually
+  function copyToClipboard(text: string): boolean {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      if (ok) return true;
+    } catch { /* fall through */ }
+    try {
+      navigator.clipboard?.writeText(text);
+      return true;
+    } catch { /* fall through */ }
+    window.prompt("Copy this link:", text);
+    return true;
   }
 
   async function copyViewLink() {
@@ -76,13 +102,13 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
       }
       const { token } = await res.json();
       const url = `${window.location.origin}/v/${token}`;
-      await navigator.clipboard.writeText(url);
+      copyToClipboard(url);
       setShareOpen(false);
       setCopied("view");
       setTimeout(() => setCopied(null), 2000);
     } catch (err) {
       console.error("Failed to mint view link:", err);
-      alert("Could not create view link.");
+      alert(`Could not create view link: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setMintingView(false);
     }
