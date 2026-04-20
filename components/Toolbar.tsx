@@ -39,9 +39,16 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        alert(err.error === "Not authenticated"
-          ? "Sign in to create a view link."
-          : "Could not create view link.");
+        console.error("Share-token POST failed:", res.status, err);
+        if (res.status === 401) {
+          alert("Sign in to create a view link.");
+        } else if (res.status === 403) {
+          alert("Only the document owner can create share links.");
+        } else if (res.status === 404) {
+          alert("Document not found.");
+        } else {
+          alert(`Could not create view link (${res.status}).`);
+        }
         return;
       }
       const { token } = await res.json();
