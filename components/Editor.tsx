@@ -17,6 +17,7 @@ interface EditorProps {
   userColor: string;
   onSynced?: () => void;
   registerImportHtml?: (fn: (html: string) => void) => void;
+  registerEditor?: (editor: unknown) => void;
 }
 
 // Custom BlockTypeSelect that handles Yjs string props (level: "1" vs 1)
@@ -66,7 +67,7 @@ function CollabBlockTypeSelect() {
   return <Components.FormattingToolbar.Select className="bn-select" items={selectItems} />;
 }
 
-export default function Editor({ docId, userName, userColor, onSynced, registerImportHtml }: EditorProps) {
+export default function Editor({ docId, userName, userColor, onSynced, registerImportHtml, registerEditor }: EditorProps) {
   const [ready, setReady] = useState(false);
   const ydocRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
@@ -120,6 +121,13 @@ export default function Editor({ docId, userName, userColor, onSynced, registerI
     },
     [ready]
   );
+
+  // Expose editor instance to parent (for outline panel, etc.)
+  useEffect(() => {
+    if (!registerEditor || !editor) return;
+    registerEditor(editor);
+    return () => registerEditor(null);
+  }, [editor, registerEditor]);
 
   // Register import handler so parent can trigger HTML import
   useEffect(() => {

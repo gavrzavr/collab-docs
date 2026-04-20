@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import NamePrompt from "@/components/NamePrompt";
 import Toolbar from "@/components/Toolbar";
 import DocPreview from "@/components/DocPreview";
+import OutlinePanel from "@/components/OutlinePanel";
 
 const Editor = dynamic(() => import("@/components/Editor"), { ssr: false });
 
@@ -34,6 +35,8 @@ export default function DocClient({ id, initialBlocks }: DocClientProps) {
   const [checked, setChecked] = useState(false);
   const [sessionUser, setSessionUser] = useState<{ name: string; email: string; image?: string } | null>(null);
   const [synced, setSynced] = useState(false);
+  const [editor, setEditor] = useState<unknown>(null);
+  const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null);
   const importHtmlRef = useRef<((html: string) => void) | null>(null);
 
   const handleSynced = useCallback(() => {
@@ -42,6 +45,14 @@ export default function DocClient({ id, initialBlocks }: DocClientProps) {
 
   const handleImportHtml = useCallback((html: string) => {
     importHtmlRef.current?.(html);
+  }, []);
+
+  const handleRegisterEditor = useCallback((e: unknown) => {
+    setEditor(e);
+  }, []);
+
+  const handleScrollRef = useCallback((node: HTMLDivElement | null) => {
+    setScrollEl(node);
   }, []);
 
   useEffect(() => {
@@ -86,7 +97,12 @@ export default function DocClient({ id, initialBlocks }: DocClientProps) {
   return (
     <div className="flex flex-col h-screen">
       <Toolbar docId={id} sessionUser={sessionUser} onImportHtml={handleImportHtml} />
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 flex overflow-hidden">
+        <OutlinePanel
+          editor={(synced ? editor : null) as never}
+          scrollContainer={scrollEl}
+        />
+      <div ref={handleScrollRef} className="flex-1 overflow-y-auto">
         <div className="max-w-[800px] mx-auto py-8">
           {/* Show server-rendered preview while Yjs is connecting */}
           {!synced && initialBlocks.length > 0 && (
@@ -139,9 +155,11 @@ export default function DocClient({ id, initialBlocks }: DocClientProps) {
               userColor={user.color}
               onSynced={handleSynced}
               registerImportHtml={(fn) => { importHtmlRef.current = fn; }}
+              registerEditor={handleRegisterEditor}
             />
           </div>
         </div>
+      </div>
       </div>
     </div>
   );
