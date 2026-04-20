@@ -62,25 +62,95 @@ Open <http://localhost:3000>, sign in, create a document.
 On Railway redeploy the server receives SIGTERM; `persistAllDocs()` flushes every
 in-memory Yjs doc to SQLite before exit.
 
-## MCP tools
+## Connecting Claude
 
-Connect Claude with an HTTP MCP connector pointed at
-`https://<ws-server-host>/mcp`. Available tools:
+The MCP endpoint is public (no auth). That's OK for the current MVP because
+document IDs are unguessable nanoids — anyone without the ID can't find the
+doc. Revisit this before moving to sensitive content.
+
+**Endpoint:** `https://collab-docs-production.up.railway.app/mcp`
+
+### Claude.ai (web)
+
+1. Settings → Connectors → **Add custom connector**
+2. Name: `CollabDocs` · URL: the endpoint above
+3. Save, then click **Connect**
+
+### Claude Desktop
+
+1. Settings → Connectors → **Add custom connector**
+2. Same URL as above
+3. Fully quit the app (⌘Q on macOS) and reopen so it picks up the new tools
+
+### Claude Code (CLI)
+
+```bash
+claude mcp add --transport http collab-docs https://collab-docs-production.up.railway.app/mcp
+```
+
+### Verifying the connection
+
+Ask Claude: *"What tools do you have for collab-docs?"*
+
+You should see a live, block-based editor framing and six tools:
+`read_document`, `edit_document`, `update_block`, `insert_block`,
+`delete_block`, `create_table`. If the framing talks about
+"Editorial Typography Expert" you're on an old cached description — see
+**When tools look stale** below.
+
+### Giving Claude a document
+
+Paste the document URL or ID into the chat, e.g.
+`https://collab-docs-rose.vercel.app/doc/abc123`. Claude extracts the ID and
+calls `read_document`. IDs must match `^[A-Za-z0-9_-]{1,64}$`; anything else
+is rejected server-side.
+
+Example prompts:
+
+- *"Read https://collab-docs-rose.vercel.app/doc/abc123 and summarize it."*
+- *"In that doc, turn the third bullet into a heading and make the price bold."*
+- *"Add a table of Q1 metrics after the Revenue section."*
+
+### When tools look stale
+
+MCP clients cache tool descriptions at connection time. After we push changes
+to tool descriptions or add new tools, you need to reconnect to pick them up:
+
+- Claude.ai / Desktop: Settings → Connectors → disconnect CollabDocs →
+  connect again.
+- Claude Code: `claude mcp remove collab-docs` then re-run the `add` command.
+
+Quick sanity check: ask Claude *"what's the first rule of editing
+collab-docs?"* — current tool descriptions start with *"think in blocks, not
+pages"*. An old cache will sound like *"Editorial Typography Expert"*.
+
+### Tools
 
 | Tool | Purpose |
 | --- | --- |
 | `read_document` | Return blocks with IDs, types, and markdown text |
-| `edit_document` | Append or replace content from markdown |
+| `edit_document` | Append (default) or replace content from markdown |
 | `update_block` | Replace text and/or attrs (type, colors, alignment) on one block |
 | `insert_block` | Insert a new block after a given ID |
 | `delete_block` | Remove a block by ID |
 | `create_table` | Insert a table from a 2D array |
 
-Inline formatting in all `text` arguments: `**bold**`, `*italic*`, `~~strike~~`,
-`\`code\``, `__underline__`, `[label](url)`.
+For targeted edits always prefer `update_block` / `insert_block` /
+`delete_block` over `edit_document(mode="replace")` — they preserve block
+IDs, don't disturb other collaborators, and keep cursor positions valid for
+everyone editing live.
 
-Colors accepted by `update_block` / `insert_block`: `default`, `gray`, `brown`,
-`red`, `orange`, `yellow`, `green`, `blue`, `purple`, `pink`.
+Inline formatting in all `text` arguments: `**bold**`, `*italic*`,
+`~~strike~~`, `` `code` ``, `__underline__`, `[label](url)`.
+
+Colors accepted by `update_block` / `insert_block`: `default`, `gray`,
+`brown`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `pink`.
+
+### Legacy stdio MCP (`mcp-server/`)
+
+There's an older stdio variant under `mcp-server/` that wraps the REST API.
+It exists so Claude Code can mount an MCP without an HTTP tunnel during
+local development. For everything else, prefer the HTTP endpoint above.
 
 ## REST API
 
