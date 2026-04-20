@@ -17,10 +17,12 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
   const [importing, setImporting] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [viewLinkUrl, setViewLinkUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const exportRef = useRef<HTMLDivElement>(null);
   const shareRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const viewLinkInputRef = useRef<HTMLInputElement>(null);
 
   async function handleSignOut() {
     // NextAuth's POST /api/auth/signout requires a CSRF token. Same
@@ -77,9 +79,10 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
     return true;
   }
 
-  async function copyViewLink() {
+  async function mintViewLink() {
     if (mintingView) return;
     setMintingView(true);
+    setViewLinkUrl(null);
     try {
       const res = await fetch(`/api/v1/docs/${docId}/share-tokens`, {
         method: "POST",
@@ -101,17 +104,32 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
         return;
       }
       const { token } = await res.json();
-      const url = `${window.location.origin}/v/${token}`;
-      copyToClipboard(url);
-      setShareOpen(false);
-      setCopied("view");
-      setTimeout(() => setCopied(null), 2000);
+      setViewLinkUrl(`${window.location.origin}/v/${token}`);
+      // Auto-focus + select the link so the user can Cmd+C. Copy button
+      // below gives a one-click path that's Safari-safe (direct gesture).
+      setTimeout(() => {
+        viewLinkInputRef.current?.focus();
+        viewLinkInputRef.current?.select();
+      }, 0);
     } catch (err) {
       console.error("Failed to mint view link:", err);
       alert(`Could not create view link: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setMintingView(false);
     }
+  }
+
+  // Direct onClick, no `await` before the copy → Safari keeps the
+  // user-gesture token and writeText is allowed.
+  function copyViewLinkSync() {
+    if (!viewLinkUrl) return;
+    copyToClipboard(viewLinkUrl);
+    setCopied("view");
+    setTimeout(() => {
+      setCopied(null);
+      setShareOpen(false);
+      setViewLinkUrl(null);
+    }, 1200);
   }
 
   async function exportMarkdown() {
@@ -189,8 +207,8 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
         </button>
         {shareOpen && (
           <>
-            <div className="fixed inset-0 z-10" onClick={() => setShareOpen(false)} />
-            <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20 min-w-[200px]">
+            <div className="fixed inset-0 z-10" onClick={() => { setShareOpen(false); setViewLinkUrl(null); }} />
+            <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20 min-w-[260px]">
               <button
                 onClick={copyEditLink}
                 className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors rounded-t-md"
@@ -198,15 +216,37 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
                 Copy edit link
                 <div className="text-xs text-gray-500">for collaborators</div>
               </button>
-              <button
-                onClick={copyViewLink}
-                disabled={mintingView || !sessionUser}
-                className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors rounded-b-md disabled:opacity-50 disabled:cursor-not-allowed"
-                title={!sessionUser ? "Sign in to create a view link" : undefined}
-              >
-                {mintingView ? "Creating..." : "Copy view link"}
-                <div className="text-xs text-gray-500">read-only</div>
-              </button>
+              {!viewLinkUrl ? (
+                <button
+                  onClick={mintViewLink}
+                  disabled={mintingView || !sessionUser}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors rounded-b-md disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={!sessionUser ? "Sign in to create a view link" : undefined}
+                >
+                  {mintingView ? "Creating..." : "Copy view link"}
+                  <div className="text-xs text-gray-500">read-only</div>
+                </button>
+              ) : (
+                <div className="px-4 py-2 border-t border-gray-100">
+                  <div className="text-xs text-gray-500 mb-1.5">View link (read-only)</div>
+                  <div className="flex gap-1.5">
+                    <input
+                      ref={viewLinkInputRef}
+                      type="text"
+                      readOnly
+                      value={viewLinkUrl}
+                      onFocus={(e) => e.target.select()}
+                      className="flex-1 min-w-0 px-2 py-1 text-xs border border-gray-200 rounded bg-gray-50 focus:outline-none focus:border-gray-400"
+                    />
+                    <button
+                      onClick={copyViewLinkSync}
+                      className="px-2 py-1 text-xs bg-gray-900 hover:bg-gray-700 text-white rounded transition-colors shrink-0"
+                    >
+                      {copied === "view" ? "Copied" : "Copy"}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </>
         )}
