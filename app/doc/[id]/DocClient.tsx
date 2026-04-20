@@ -106,7 +106,7 @@ export default function DocClient({ id, initialBlocks }: DocClientProps) {
         <div className="max-w-[800px] mx-auto py-8">
           {/* Show server-rendered preview while Yjs is connecting */}
           {!synced && initialBlocks.length > 0 && (
-            <div className="pointer-events-none select-none" style={{ paddingLeft: 54 }}>
+            <div className="pointer-events-none select-none px-4 md:px-[54px]">
               {initialBlocks.map((block) => {
                 switch (block.type) {
                   case "heading": {

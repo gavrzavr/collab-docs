@@ -73,22 +73,23 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
   }
 
   return (
-    <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-200 bg-white">
+    <div className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 border-b border-gray-200 bg-white">
       <Link
         href={sessionUser ? "/dashboard" : "/"}
-        className="flex items-center gap-2 text-sm font-medium text-gray-700 mr-auto hover:text-black transition-colors"
+        className="flex items-center gap-2 text-sm font-medium text-gray-700 mr-auto hover:text-black transition-colors shrink-0"
+        aria-label="PostPaper"
       >
         <span
           aria-hidden="true"
           className="inline-block w-4 h-4 rounded-sm bg-[#0BA70B]"
         />
-        PostPaper
+        <span className="hidden sm:inline">PostPaper</span>
       </Link>
 
       {/* 1. Share */}
       <button
         onClick={copyLink}
-        className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
+        className="px-2.5 sm:px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors whitespace-nowrap shrink-0"
       >
         {copied ? "Copied!" : "Share"}
       </button>
@@ -104,7 +105,7 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
       <button
         onClick={() => fileInputRef.current?.click()}
         disabled={importing}
-        className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors disabled:opacity-50"
+        className="px-2.5 sm:px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors disabled:opacity-50 whitespace-nowrap shrink-0"
       >
         {importing ? "Importing..." : "Import"}
       </button>
@@ -112,16 +113,16 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
       {/* 3. Connect AI */}
       <Link
         href={`/connect?doc=${docId}`}
-        className="px-3 py-1.5 text-sm bg-orange-50 hover:bg-orange-100 text-orange-700 rounded-md transition-colors"
+        className="px-2.5 sm:px-3 py-1.5 text-sm bg-orange-50 hover:bg-orange-100 text-orange-700 rounded-md transition-colors whitespace-nowrap shrink-0"
       >
         Connect AI
       </Link>
 
       {/* 4. Export (dropdown) */}
-      <div className="relative" ref={exportRef}>
+      <div className="relative shrink-0" ref={exportRef}>
         <button
           onClick={() => setExportOpen(!exportOpen)}
-          className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors flex items-center gap-1"
+          className="px-2.5 sm:px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors flex items-center gap-1 whitespace-nowrap"
         >
           Export
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -151,16 +152,16 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
       </div>
 
       {sessionUser && (
-        <div className="flex items-center gap-2 ml-2 pl-2 border-l border-gray-200">
+        <div className="flex items-center gap-2 ml-1 pl-2 sm:ml-2 border-l border-gray-200 shrink-0">
           {sessionUser.image && (
             <img
               src={sessionUser.image}
               alt={sessionUser.name}
-              className="w-7 h-7 rounded-full"
+              className="w-7 h-7 rounded-full shrink-0"
               referrerPolicy="no-referrer"
             />
           )}
-          <span className="text-sm text-gray-600">{sessionUser.name}</span>
+          <span className="hidden md:inline text-sm text-gray-600">{sessionUser.name}</span>
         </div>
       )}
     </div>

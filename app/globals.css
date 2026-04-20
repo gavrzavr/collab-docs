@@ -27,6 +27,15 @@ body {
   padding-bottom: 200px !important;
 }
 
+/* Trim BlockNote's default 54px horizontal padding on narrow screens so
+   content doesn't break mid-word. Desktop keeps the comfy margin. */
+@media (max-width: 767px) {
+  .bn-container .ProseMirror {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+  }
+}
+
 /* Hide Heading 4-6 and Toggle Headings from block type menu */
 [data-test="heading-4"],
 [data-test="heading-5"],
