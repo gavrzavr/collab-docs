@@ -45,7 +45,346 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_documents_owner_updated
     ON documents (owner_id, updated_at DESC);
+  -- Analytics event log: MCP tool calls, REST bridge writes, etc.
+  -- Deliberately append-only + indexed on (kind, ts) to keep admin aggregates fast.
+  CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL DEFAULT (datetime('now')),
+    kind TEXT NOT NULL,
+    doc_id TEXT,
+    owner_id TEXT,
+    meta TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts DESC);
+  CREATE INDEX IF NOT EXISTS idx_events_kind_ts ON events (kind, ts DESC);
+  CREATE INDEX IF NOT EXISTS idx_events_doc_ts ON events (doc_id, ts DESC);
 `);
+
+// ─── Event logging ───────────────────────────────────────────────────
+//
+// Best-effort: an analytics insert must never take down an MCP call.
+// Owner attribution is done at write time so admin queries are cheap
+// (no JOIN on the hot path of daily aggregation).
+const insertEventStmt = db.prepare(
+  "INSERT INTO events (kind, doc_id, owner_id, meta) VALUES (?, ?, ?, ?)"
+);
+const getDocOwnerStmt = db.prepare(
+  "SELECT owner_id FROM documents WHERE id = ?"
+);
+
+function logEvent(
+  kind: string,
+  docId: string | null,
+  meta?: Record<string, unknown>
+): void {
+  try {
+    let ownerId: string | null = null;
+    if (docId) {
+      const row = getDocOwnerStmt.get(docId) as { owner_id: string | null } | undefined;
+      ownerId = row?.owner_id ?? null;
+    }
+    insertEventStmt.run(kind, docId, ownerId, meta ? JSON.stringify(meta) : null);
+  } catch (e) {
+    console.error("[events] logEvent failed", kind, e);
+  }
+}
+
+// ─── Admin analytics aggregator ──────────────────────────────────────
+//
+// All queries are UTC-normalized on the SQL side via strftime() so the
+// Next.js layer can render them as-is without re-bucketing.
+//
+// Definitions:
+//   - "user"           = distinct non-null documents.owner_id
+//   - "active user"    = user whose doc's updated_at falls in the window
+//                        (we don't have login events, and this is a tight
+//                         proxy in a collab editor — you only update_at when
+//                         someone actually types)
+//   - "new user"       = owner_id whose first-ever doc was created in the bucket
+//   - "AI user"        = user whose doc appears in events where kind LIKE 'mcp.%'
+
+interface DailyBucket {
+  date: string;          // YYYY-MM-DD
+  newDocs: number;
+  activeDocs: number;
+  newUsers: number;
+  activeUsers: number;
+  aiCalls: number;
+}
+
+interface AdminStats {
+  generatedAt: string;
+  windowDays: number;
+  totals: {
+    users: number;
+    docs: number;
+    activeUsers7d: number;
+    activeUsers30d: number;
+    docsWithAi: number;
+    usersWithAi: number;
+    aiCallsAllTime: number;
+  };
+  daily: DailyBucket[];
+  toolBreakdown: Array<{ kind: string; count: number }>;
+  topDocs: Array<{ doc_id: string; owner_id: string | null; title: string | null; ai_calls: number; last_edited: string | null }>;
+  cohorts: {
+    // weeks: ISO week labels (newest last)
+    weeks: string[];
+    // rows[i] = cohort registered in weeks[i]; rows[i][j] = count of users
+    // from that cohort who were active in weeks[j] (j >= i)
+    rows: Array<{ cohort: string; size: number; retained: number[] }>;
+  };
+  activationFunnel: {
+    usersSignedUp: number;   // distinct owner_id (proxy: created ≥1 doc)
+    usersWithEdits: number;  // owner_id whose doc updated_at != created_at
+    usersWithAi: number;
+  };
+}
+
+function computeAdminStats(days: number): AdminStats {
+  // ── Totals ───────────────────────────────────────────────────────────
+  const usersRow = db.prepare(
+    "SELECT COUNT(DISTINCT owner_id) AS n FROM documents WHERE owner_id IS NOT NULL"
+  ).get() as { n: number };
+  const docsRow = db.prepare("SELECT COUNT(*) AS n FROM documents").get() as { n: number };
+  const active7Row = db.prepare(
+    `SELECT COUNT(DISTINCT owner_id) AS n FROM documents
+     WHERE owner_id IS NOT NULL AND updated_at >= datetime('now', '-7 days')`
+  ).get() as { n: number };
+  const active30Row = db.prepare(
+    `SELECT COUNT(DISTINCT owner_id) AS n FROM documents
+     WHERE owner_id IS NOT NULL AND updated_at >= datetime('now', '-30 days')`
+  ).get() as { n: number };
+  const docsWithAiRow = db.prepare(
+    "SELECT COUNT(DISTINCT doc_id) AS n FROM events WHERE kind LIKE 'mcp.%' AND doc_id IS NOT NULL"
+  ).get() as { n: number };
+  const usersWithAiRow = db.prepare(
+    "SELECT COUNT(DISTINCT owner_id) AS n FROM events WHERE kind LIKE 'mcp.%' AND owner_id IS NOT NULL"
+  ).get() as { n: number };
+  const aiCallsAllTimeRow = db.prepare(
+    "SELECT COUNT(*) AS n FROM events WHERE kind LIKE 'mcp.%'"
+  ).get() as { n: number };
+
+  // ── Daily buckets for last `days` days ───────────────────────────────
+  //
+  // Build an empty date scaffold in JS (so days with zero activity still
+  // show up), then fold three SQL queries into it: new docs, doc updates,
+  // and AI calls. New-users-per-day is trickier: a user "arrives" the day
+  // their first doc is created, so we compute per-owner first_created
+  // once and count how many land on each date.
+
+  const today = new Date();
+  const daily: DailyBucket[] = [];
+  const byDate = new Map<string, DailyBucket>();
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setUTCDate(d.getUTCDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    const bucket: DailyBucket = {
+      date: key, newDocs: 0, activeDocs: 0,
+      newUsers: 0, activeUsers: 0, aiCalls: 0,
+    };
+    daily.push(bucket);
+    byDate.set(key, bucket);
+  }
+
+  const newDocsRows = db.prepare(
+    `SELECT substr(created_at, 1, 10) AS d, COUNT(*) AS n
+       FROM documents
+      WHERE created_at >= datetime('now', ?)
+      GROUP BY d`
+  ).all(`-${days} days`) as Array<{ d: string; n: number }>;
+  for (const r of newDocsRows) {
+    const b = byDate.get(r.d); if (b) b.newDocs = r.n;
+  }
+
+  const activeDocsRows = db.prepare(
+    `SELECT substr(updated_at, 1, 10) AS d, COUNT(*) AS n
+       FROM documents
+      WHERE updated_at >= datetime('now', ?)
+      GROUP BY d`
+  ).all(`-${days} days`) as Array<{ d: string; n: number }>;
+  for (const r of activeDocsRows) {
+    const b = byDate.get(r.d); if (b) b.activeDocs = r.n;
+  }
+
+  const activeUsersRows = db.prepare(
+    `SELECT substr(updated_at, 1, 10) AS d, COUNT(DISTINCT owner_id) AS n
+       FROM documents
+      WHERE owner_id IS NOT NULL
+        AND updated_at >= datetime('now', ?)
+      GROUP BY d`
+  ).all(`-${days} days`) as Array<{ d: string; n: number }>;
+  for (const r of activeUsersRows) {
+    const b = byDate.get(r.d); if (b) b.activeUsers = r.n;
+  }
+
+  // New users: owner's first doc created on that day
+  const newUsersRows = db.prepare(
+    `SELECT substr(first_created, 1, 10) AS d, COUNT(*) AS n FROM (
+       SELECT owner_id, MIN(created_at) AS first_created
+         FROM documents
+        WHERE owner_id IS NOT NULL
+        GROUP BY owner_id
+     )
+     WHERE first_created >= datetime('now', ?)
+     GROUP BY d`
+  ).all(`-${days} days`) as Array<{ d: string; n: number }>;
+  for (const r of newUsersRows) {
+    const b = byDate.get(r.d); if (b) b.newUsers = r.n;
+  }
+
+  const aiCallsRows = db.prepare(
+    `SELECT substr(ts, 1, 10) AS d, COUNT(*) AS n
+       FROM events
+      WHERE kind LIKE 'mcp.%'
+        AND ts >= datetime('now', ?)
+      GROUP BY d`
+  ).all(`-${days} days`) as Array<{ d: string; n: number }>;
+  for (const r of aiCallsRows) {
+    const b = byDate.get(r.d); if (b) b.aiCalls = r.n;
+  }
+
+  // ── Tool breakdown (last window) ─────────────────────────────────────
+  const toolBreakdown = db.prepare(
+    `SELECT kind, COUNT(*) AS count
+       FROM events
+      WHERE kind LIKE 'mcp.%'
+        AND ts >= datetime('now', ?)
+      GROUP BY kind
+      ORDER BY count DESC`
+  ).all(`-${days} days`) as Array<{ kind: string; count: number }>;
+
+  // ── Top docs by AI activity (last window) ────────────────────────────
+  const topDocs = db.prepare(
+    `SELECT e.doc_id, d.owner_id, d.title, d.updated_at AS last_edited,
+            COUNT(*) AS ai_calls
+       FROM events e
+       LEFT JOIN documents d ON d.id = e.doc_id
+      WHERE e.kind LIKE 'mcp.%'
+        AND e.ts >= datetime('now', ?)
+        AND e.doc_id IS NOT NULL
+      GROUP BY e.doc_id
+      ORDER BY ai_calls DESC
+      LIMIT 10`
+  ).all(`-${days} days`) as Array<{
+    doc_id: string; owner_id: string | null; title: string | null;
+    last_edited: string | null; ai_calls: number;
+  }>;
+
+  // ── Weekly cohort retention ──────────────────────────────────────────
+  //
+  // For each user, pair (first_week_they_registered) × (week_they_were_active).
+  // strftime('%Y-%W') gives "year-weeknum", sufficient for sorting/labels.
+  // Active = any doc of theirs updated in that week. Limit to last 8 weeks so
+  // the matrix stays readable; older cohorts fall off the bottom.
+
+  const N_WEEKS = 8;
+  const cohortRows = db.prepare(
+    `WITH user_cohorts AS (
+        SELECT owner_id,
+               strftime('%Y-%W', MIN(created_at)) AS cohort_week
+          FROM documents
+         WHERE owner_id IS NOT NULL
+         GROUP BY owner_id
+      ),
+      user_activity AS (
+        SELECT DISTINCT owner_id,
+               strftime('%Y-%W', updated_at) AS active_week
+          FROM documents
+         WHERE owner_id IS NOT NULL
+      )
+      SELECT uc.cohort_week, ua.active_week, COUNT(DISTINCT uc.owner_id) AS n
+        FROM user_cohorts uc
+        JOIN user_activity ua USING (owner_id)
+       WHERE uc.cohort_week >= strftime('%Y-%W', datetime('now', ?))
+         AND ua.active_week >= uc.cohort_week
+       GROUP BY uc.cohort_week, ua.active_week`
+  ).all(`-${N_WEEKS * 7} days`) as Array<{
+    cohort_week: string; active_week: string; n: number;
+  }>;
+
+  // Build matrix: compute which weeks to show (current week backwards)
+  const weeks: string[] = [];
+  {
+    const seen = new Set<string>();
+    for (const r of cohortRows) { seen.add(r.cohort_week); seen.add(r.active_week); }
+    const sorted = [...seen].sort();
+    // Trim to most recent N_WEEKS so the heatmap doesn't explode
+    for (const w of sorted.slice(-N_WEEKS)) weeks.push(w);
+  }
+  const weekIdx = new Map<string, number>();
+  weeks.forEach((w, i) => weekIdx.set(w, i));
+
+  // Cohort sizes: count distinct owners per cohort week (overall, not restricted)
+  const cohortSizeRows = db.prepare(
+    `WITH user_cohorts AS (
+        SELECT owner_id,
+               strftime('%Y-%W', MIN(created_at)) AS cohort_week
+          FROM documents
+         WHERE owner_id IS NOT NULL
+         GROUP BY owner_id
+      )
+      SELECT cohort_week, COUNT(*) AS size
+        FROM user_cohorts
+       GROUP BY cohort_week`
+  ).all() as Array<{ cohort_week: string; size: number }>;
+  const cohortSizeMap = new Map<string, number>();
+  for (const r of cohortSizeRows) cohortSizeMap.set(r.cohort_week, r.size);
+
+  const cohortRowsOut: Array<{ cohort: string; size: number; retained: number[] }> = [];
+  for (const w of weeks) {
+    const cohortWeekIdx = weekIdx.get(w)!;
+    const retained = new Array(weeks.length - cohortWeekIdx).fill(0);
+    cohortRowsOut.push({
+      cohort: w,
+      size: cohortSizeMap.get(w) ?? 0,
+      retained,
+    });
+  }
+  for (const r of cohortRows) {
+    const cohortI = weekIdx.get(r.cohort_week);
+    const activeI = weekIdx.get(r.active_week);
+    if (cohortI === undefined || activeI === undefined) continue;
+    if (activeI < cohortI) continue;
+    const row = cohortRowsOut.find((x) => x.cohort === r.cohort_week);
+    if (!row) continue;
+    row.retained[activeI - cohortI] = r.n;
+  }
+
+  // ── Activation funnel ────────────────────────────────────────────────
+  const usersSignedUp = usersRow.n;
+  const usersWithEditsRow = db.prepare(
+    `SELECT COUNT(*) AS n FROM (
+       SELECT owner_id FROM documents
+        WHERE owner_id IS NOT NULL AND updated_at > created_at
+        GROUP BY owner_id
+     )`
+  ).get() as { n: number };
+
+  return {
+    generatedAt: new Date().toISOString(),
+    windowDays: days,
+    totals: {
+      users: usersRow.n,
+      docs: docsRow.n,
+      activeUsers7d: active7Row.n,
+      activeUsers30d: active30Row.n,
+      docsWithAi: docsWithAiRow.n,
+      usersWithAi: usersWithAiRow.n,
+      aiCallsAllTime: aiCallsAllTimeRow.n,
+    },
+    daily,
+    toolBreakdown,
+    topDocs,
+    cohorts: { weeks, rows: cohortRowsOut },
+    activationFunnel: {
+      usersSignedUp,
+      usersWithEdits: usersWithEditsRow.n,
+      usersWithAi: usersWithAiRow.n,
+    },
+  };
+}
 
 // Document IDs are user-controllable input (URL path segment). Restrict them
 // to the same alphabet that the UI generates (nanoid-style) so nothing can
@@ -527,6 +866,7 @@ function createMcpServer(): McpServer {
     },
     async ({ doc_url }) => {
       const docId = extractDocIdFromUrl(doc_url);
+      logEvent("mcp.read_document", docId);
       try {
         const entry = getOrCreateDoc(docId);
         const blocks = extractBlocksWithIds(entry.ydoc);
@@ -569,6 +909,7 @@ function createMcpServer(): McpServer {
     },
     async ({ doc_url, content, mode }) => {
       const docId = extractDocIdFromUrl(doc_url);
+      logEvent("mcp.edit_document", docId, { mode, chars: content.length });
       try {
         const entry = getOrCreateDoc(docId);
         let count: number;
@@ -604,6 +945,7 @@ function createMcpServer(): McpServer {
     },
     async ({ doc_url, block_id, text, block_type, level, text_color, background_color, text_alignment }) => {
       const docId = extractDocIdFromUrl(doc_url);
+      logEvent("mcp.update_block", docId, { block_id });
       try {
         const entry = getOrCreateDoc(docId);
 
@@ -643,6 +985,7 @@ function createMcpServer(): McpServer {
     },
     async ({ doc_url, block_id }) => {
       const docId = extractDocIdFromUrl(doc_url);
+      logEvent("mcp.delete_block", docId, { block_id });
       try {
         const entry = getOrCreateDoc(docId);
         const ok = deleteBlock(entry.ydoc, block_id);
@@ -672,6 +1015,7 @@ function createMcpServer(): McpServer {
     },
     async ({ doc_url, after_block_id, text, block_type, level, text_color, background_color }) => {
       const docId = extractDocIdFromUrl(doc_url);
+      logEvent("mcp.insert_block", docId, { after_block_id, block_type });
       try {
         const entry = getOrCreateDoc(docId);
         const style: BlockStyle = {};
@@ -700,6 +1044,7 @@ function createMcpServer(): McpServer {
     },
     async ({ doc_url, rows, after_block_id }) => {
       const docId = extractDocIdFromUrl(doc_url);
+      logEvent("mcp.create_table", docId, { rows: rows?.length ?? 0, cols: rows?.[0]?.length ?? 0 });
       try {
         if (!rows || rows.length === 0) {
           return mcpError("invalid_input", "rows must have at least one row.");
@@ -1016,6 +1361,29 @@ const httpServer = http.createServer(async (req, res) => {
     } catch (e) {
       res.writeHead(500);
       res.end(String(e));
+    }
+    return;
+  }
+
+  // ─── Admin analytics endpoint ───────────────────────────────────────────
+  //
+  // Behind a shared secret (ADMIN_SECRET env). The Next.js admin page proxies
+  // to this endpoint — end users never hit it directly. Reads are heavy-ish
+  // SQL (cohort retention) but still cheap on a hobby dataset; revisit if we
+  // ever run this on tens of thousands of docs.
+  if (req.method === "GET" && pathname === "/api/admin/stats") {
+    const expected = process.env.ADMIN_SECRET;
+    const authHeader = req.headers.authorization || "";
+    if (!expected || authHeader !== `Bearer ${expected}`) {
+      sendJson(res, 401, { error: "Unauthorized" });
+      return;
+    }
+    const days = Math.min(90, Math.max(1, Number(url.searchParams.get("days")) || 30));
+    try {
+      sendJson(res, 200, computeAdminStats(days));
+    } catch (e) {
+      console.error("[admin/stats] failed", e);
+      sendJson(res, 500, { error: String(e) });
     }
     return;
   }
