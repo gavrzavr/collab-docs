@@ -1,8 +1,8 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "CollabDocs API",
-    "description": "API for reading and editing collaborative documents in CollabDocs. Use these endpoints to read document content, append text, or replace entire documents.",
+    "title": "PostPaper API",
+    "description": "API for reading and editing collaborative documents in PostPaper. Use these endpoints to read document content, append text, or replace entire documents.",
     "version": "1.0.0"
   },
   "servers": [

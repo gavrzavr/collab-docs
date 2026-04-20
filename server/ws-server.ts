@@ -514,14 +514,14 @@ function mcpErrorFromException(e: unknown) {
 
 function createMcpServer(): McpServer {
   const mcp = new McpServer({
-    name: "CollabDocs",
+    name: "PostPaper",
     version: "0.3.0",
     instructions: MCP_INSTRUCTIONS,
   });
 
   mcp.tool(
     "read_document",
-    "Read a CollabDocs document. This is a live, multi-user, block-based editor: each block has a stable ID and is an independent unit of meaning. ALWAYS call this before editing — returns blocks with IDs so you can make surgical edits via update_block / insert_block / delete_block (preferred) instead of rewriting. Core mindset: think in blocks, not pages; one idea per block; headings are navigation, not decoration; preserve collaborators' work — do not touch blocks unrelated to the task.",
+    "Read a PostPaper document. This is a live, multi-user, block-based editor: each block has a stable ID and is an independent unit of meaning. ALWAYS call this before editing — returns blocks with IDs so you can make surgical edits via update_block / insert_block / delete_block (preferred) instead of rewriting. Core mindset: think in blocks, not pages; one idea per block; headings are navigation, not decoration; preserve collaborators' work — do not touch blocks unrelated to the task.",
     {
       doc_url: z.string().describe("Document URL (e.g. https://postpaper.co/doc/ABC123) or just the document ID"),
     },
@@ -561,7 +561,7 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "edit_document",
-    "Append (or replace) markdown content in a CollabDocs document. Each line becomes one block; prefix sets type — no prefix = paragraph, # = heading, - = bullet, 1. = numbered, - [ ] = task. Inline: **bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url). For targeted edits ALWAYS prefer update_block / insert_block / delete_block — they preserve block IDs and don't disturb other collaborators. mode='replace' is a last resort; never use it unless the user explicitly asks to rewrite the whole document. For tables use create_table. For colors, write content first, then update_block with text_color/background_color.",
+    "Append (or replace) markdown content in a PostPaper document. Each line becomes one block; prefix sets type — no prefix = paragraph, # = heading, - = bullet, 1. = numbered, - [ ] = task. Inline: **bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url). For targeted edits ALWAYS prefer update_block / insert_block / delete_block — they preserve block IDs and don't disturb other collaborators. mode='replace' is a last resort; never use it unless the user explicitly asks to rewrite the whole document. For tables use create_table. For colors, write content first, then update_block with text_color/background_color.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       content: z.string().describe("Markdown text. NO prefix = paragraph. # = heading. - = bullet. 1. = numbered. - [ ] = checklist. **bold** *italic* `code` [text](url)"),
@@ -729,7 +729,7 @@ function createMcpServer(): McpServer {
   // ─── MCP Prompt: Formatting Guide ────────────────────────────────────
   mcp.prompt(
     "formatting_guide",
-    "Comprehensive guide to CollabDocs formatting. Use this to create beautifully formatted documents.",
+    "Comprehensive guide to PostPaper formatting. Use this to create beautifully formatted documents.",
     () => ({
       messages: [{
         role: "user" as const,
@@ -748,7 +748,7 @@ function createMcpServer(): McpServer {
 // Claude receives this BEFORE any tool call. It defines the role and all capabilities.
 
 const MCP_INSTRUCTIONS = `
-You are editing a CollabDocs document — a live, multi-user, block-based editor.
+You are editing a PostPaper document — a live, multi-user, block-based editor.
 You are not writing prose into a text file. You are shaping a structured document
 where every block is an independent, addressable unit of meaning. Other humans
 and AI agents may be editing alongside you in real time.
@@ -833,7 +833,7 @@ Color semantics (stay consistent; 1–2 accent colors per document max):
 - Do not use more than 2–3 accent colors per document.
 - Do not use "---" as a separator — use a heading.
 - Toggle/collapsible headings are disabled in this editor.
-- Do not claim "CollabDocs doesn't support colors" — it does (see above).
+- Do not claim "PostPaper doesn't support colors" — it does (see above).
 
 # EXAMPLE — well-formed document
 

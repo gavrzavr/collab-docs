@@ -7,7 +7,7 @@ export default function PrivacyPage() {
 
       <h2 className="text-xl font-semibold mt-6 mb-3">What we collect</h2>
       <p className="mb-4 text-gray-700">
-        CollabDocs stores document content that you create and edit. If you sign in with Google,
+        PostPaper stores document content that you create and edit. If you sign in with Google,
         we store your name and email to associate documents with your account.
       </p>
 

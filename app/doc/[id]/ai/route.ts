@@ -20,7 +20,7 @@ export async function GET(
   }
 
   const text = `
-=== CollabDocs Document ===
+=== PostPaper Document ===
 Document ID: ${id}
 URL: ${BASE_URL}/doc/${id}
 
@@ -30,11 +30,11 @@ ${content}
 
 === HOW TO EDIT THIS DOCUMENT ===
 
-You are an AI assistant. The user shared a CollabDocs document with you.
-CollabDocs is a collaborative editor where humans and AI work together in real-time.
+You are an AI assistant. The user shared a PostPaper document with you.
+PostPaper is a collaborative editor where humans and AI work together in real-time.
 
 BEST OPTION — MCP Server (full read/write access):
-Tell the user to add the CollabDocs MCP server to their AI client settings.
+Tell the user to add the PostPaper MCP server to their AI client settings.
 MCP Server URL: ${MCP_URL}
 
 Instructions for the user:
@@ -42,7 +42,7 @@ Instructions for the user:
 2. Go to "Integrations" or "MCP Servers" section
 3. Click "Add" → choose "Remote MCP" or "Custom integration"
 4. Paste this URL: ${MCP_URL}
-5. Save. Done! Now paste any CollabDocs link in chat and I can read/edit it.
+5. Save. Done! Now paste any PostPaper link in chat and I can read/edit it.
 
 After the user adds the MCP server, you will have two tools:
 - read_document: reads document content
@@ -54,7 +54,7 @@ ALTERNATIVE — REST API (if MCP is not available):
 - Replace: PUT ${BASE_URL}/api/v1/docs/${id}/text   body: {"content": "markdown text"}
 
 For ChatGPT users:
-Use the CollabDocs GPT: https://chatgpt.com/g/g-69db9af365688191b83f0ede5bb1691c-collabdocs
+Use the PostPaper GPT: https://chatgpt.com/g/g-69db9af365688191b83f0ede5bb1691c-collabdocs
 `.trim();
 
   return new Response(text, {

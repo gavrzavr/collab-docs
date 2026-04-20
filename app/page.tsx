@@ -11,7 +11,7 @@ export default async function HomePage() {
   return (
     <main className="flex flex-1 flex-col items-center justify-center gap-8 px-4">
       <div className="text-center max-w-lg">
-        <h1 className="text-4xl font-bold tracking-tight mb-3">CollabDocs</h1>
+        <h1 className="text-4xl font-bold tracking-tight mb-3">PostPaper</h1>
         <p className="text-lg text-gray-500 mb-8">
           One document. Any AI agent. Any human. Working together.
         </p>

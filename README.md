@@ -1,4 +1,4 @@
-# CollabDocs
+# PostPaper
 
 Real-time collaborative block editor with an MCP server that lets Claude read
 and write documents directly.
@@ -73,7 +73,7 @@ doc. Revisit this before moving to sensitive content.
 ### Claude.ai (web)
 
 1. Settings → Connectors → **Add custom connector**
-2. Name: `CollabDocs` · URL: the endpoint above
+2. Name: `PostPaper` · URL: the endpoint above
 3. Save, then click **Connect**
 
 ### Claude Desktop
@@ -116,7 +116,7 @@ Example prompts:
 MCP clients cache tool descriptions at connection time. After we push changes
 to tool descriptions or add new tools, you need to reconnect to pick them up:
 
-- Claude.ai / Desktop: Settings → Connectors → disconnect CollabDocs →
+- Claude.ai / Desktop: Settings → Connectors → disconnect PostPaper →
   connect again.
 - Claude Code: `claude mcp remove collab-docs` then re-run the `add` command.
 

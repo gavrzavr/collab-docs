@@ -8,7 +8,7 @@ const geistSans = Geist({
 });
 
 export const metadata: Metadata = {
-  title: "CollabDocs — Collaborative Document Editor",
+  title: "PostPaper — Collaborative Document Editor",
   description: "One document. Any AI agent. Any human. Working together.",
 };
 

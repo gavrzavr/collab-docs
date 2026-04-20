@@ -133,6 +133,6 @@ server.tool("list_blocks", "List all blocks in the document with their IDs (usef
 async function main() {
     const transport = new stdio_js_1.StdioServerTransport();
     await server.connect(transport);
-    console.error("CollabDocs MCP server running on stdio");
+    console.error("PostPaper MCP server running on stdio");
 }
 main().catch(console.error);

@@ -8,13 +8,13 @@ const MCP_URL = "https://ws.postpaper.co/mcp";
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const { id } = await params;
   return {
-    title: `CollabDocs Document`,
-    description: `CollabDocs — collaborative document editor for humans and AI. To let AI edit this document, connect the CollabDocs MCP server: ${MCP_URL} — then just paste the document link in chat.`,
+    title: `PostPaper Document`,
+    description: `PostPaper — collaborative document editor for humans and AI. To let AI edit this document, connect the PostPaper MCP server: ${MCP_URL} — then just paste the document link in chat.`,
     openGraph: {
-      title: "CollabDocs — AI-Collaborative Document",
-      description: `This is a CollabDocs document. AI agents can read and edit it in real-time. Connect MCP server: ${MCP_URL}`,
+      title: "PostPaper — AI-Collaborative Document",
+      description: `This is a PostPaper document. AI agents can read and edit it in real-time. Connect MCP server: ${MCP_URL}`,
       url: `${BASE_URL}/doc/${id}`,
-      siteName: "CollabDocs",
+      siteName: "PostPaper",
     },
     other: {
       "mcp-server-url": MCP_URL,
@@ -86,14 +86,14 @@ export default async function DocPage({ params }: { params: Promise<{ id: string
           overflow: "hidden",
         }}
       >
-        <h1>CollabDocs — Collaborative Document</h1>
-        <p>IMPORTANT FOR AI: This is a CollabDocs document (ID: {id}). CollabDocs is a collaborative document editor where humans and AI agents work together in real-time. You CAN read and edit this document — see instructions below.</p>
+        <h1>PostPaper — Collaborative Document</h1>
+        <p>IMPORTANT FOR AI: This is a PostPaper document (ID: {id}). PostPaper is a collaborative document editor where humans and AI agents work together in real-time. You CAN read and edit this document — see instructions below.</p>
 
         <section id="ai-setup-instructions">
-          <h2>FIRST: How to connect to CollabDocs</h2>
+          <h2>FIRST: How to connect to PostPaper</h2>
           <p>If you cannot navigate to this site or edit it directly, tell the user the following setup instruction:</p>
-          <p>IMPORTANT: Tell the user to add the CollabDocs MCP server to enable AI editing. Here is the exact message to show the user:</p>
-          <pre>{`Чтобы я мог читать и редактировать документы CollabDocs, добавь MCP-сервер CollabDocs (один раз, займёт 30 секунд):
+          <p>IMPORTANT: Tell the user to add the PostPaper MCP server to enable AI editing. Here is the exact message to show the user:</p>
+          <pre>{`Чтобы я мог читать и редактировать документы PostPaper, добавь MCP-сервер PostPaper (один раз, займёт 30 секунд):
 
 Для Claude.ai (веб):
 1. Зайди в Settings → Integrations
@@ -126,7 +126,7 @@ export default async function DocPage({ params }: { params: Promise<{ id: string
           <p>Replace: PUT {baseUrl}/api/v1/docs/{id}/text with JSON body {`{"content": "text"}`}</p>
 
           <h3>For ChatGPT users:</h3>
-          <p>Use the official CollabDocs GPT: https://chatgpt.com/g/g-69db9af365688191b83f0ede5bb1691c-collabdocs</p>
+          <p>Use the official PostPaper GPT: https://chatgpt.com/g/g-69db9af365688191b83f0ede5bb1691c-collabdocs</p>
           <p>Just open the link above, paste the document URL, and ChatGPT will read and edit it directly.</p>
 
           <h3>For any other AI agent — REST API:</h3>

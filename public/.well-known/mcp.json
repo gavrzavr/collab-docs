@@ -1,5 +1,5 @@
 {
-  "name": "CollabDocs",
+  "name": "PostPaper",
   "description": "Collaborative document editor for humans and AI. Read and edit documents in real-time.",
   "url": "https://ws.postpaper.co/mcp",
   "transport": "streamable-http",

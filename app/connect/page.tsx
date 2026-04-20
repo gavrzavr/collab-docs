@@ -45,12 +45,12 @@ function ConnectContent() {
       {/* Header */}
       <div className="border-b border-gray-200 px-6 py-4">
         <Link href="/" className="text-sm font-medium text-gray-700 hover:text-black transition-colors">
-          CollabDocs
+          PostPaper
         </Link>
       </div>
 
       <div className="max-w-2xl mx-auto px-6 py-12">
-        <h1 className="text-3xl font-bold mb-2">Connect Claude to CollabDocs</h1>
+        <h1 className="text-3xl font-bold mb-2">Connect Claude to PostPaper</h1>
         <p className="text-gray-600 mb-10">
           One-time setup. After this, just paste any document link in chat — Claude will read and edit it in real-time.
         </p>
@@ -157,7 +157,7 @@ function ConnectContent() {
               <div>
                 <p className="font-medium">Fully quit and reopen Claude Desktop</p>
                 <p className="text-sm text-gray-600">
-                  ⌘Q on Mac (or File → Quit on Windows). After reopening, CollabDocs appears in the tools list (hammer icon).
+                  ⌘Q on Mac (or File → Quit on Windows). After reopening, PostPaper appears in the tools list (hammer icon).
                 </p>
               </div>
             </div>
@@ -215,7 +215,7 @@ function ConnectContent() {
             <h2 className="text-xl font-semibold">Cursor, Windsurf, and other MCP clients</h2>
           </div>
           <div className="bg-gray-50 rounded-xl p-6">
-            <p className="text-sm text-gray-600 mb-3">Any AI tool that supports MCP can connect to CollabDocs. Just add this URL as a remote MCP server:</p>
+            <p className="text-sm text-gray-600 mb-3">Any AI tool that supports MCP can connect to PostPaper. Just add this URL as a remote MCP server:</p>
             <div className="flex items-center gap-2">
               <code className="flex-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono select-all">
                 {MCP_URL}
@@ -233,7 +233,7 @@ function ConnectContent() {
           </p>
           <ul className="list-disc ml-6 text-sm text-gray-700 space-y-2">
             <li>
-              <span className="font-medium">Claude.ai / Desktop:</span> Settings → Connectors → disconnect CollabDocs → connect again.
+              <span className="font-medium">Claude.ai / Desktop:</span> Settings → Connectors → disconnect PostPaper → connect again.
             </li>
             <li>
               <span className="font-medium">Claude Code:</span>{" "}

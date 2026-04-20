@@ -85,7 +85,7 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-gray-50">
       {/* Top bar */}
       <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
-        <h1 className="text-lg font-semibold">CollabDocs</h1>
+        <h1 className="text-lg font-semibold">PostPaper</h1>
         <div className="flex items-center gap-4">
           <button
             onClick={handleCreate}

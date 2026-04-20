@@ -1,7 +1,7 @@
 {
   "name": "collab-docs-mcp",
   "version": "0.1.0",
-  "description": "MCP server for CollabDocs collaborative document editor",
+  "description": "MCP server for PostPaper collaborative document editor",
   "main": "dist/index.js",
   "bin": {
     "collab-docs-mcp": "./dist/index.js"

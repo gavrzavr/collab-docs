@@ -35,7 +35,7 @@ export default function NamePrompt({ onSubmit }: NamePromptProps) {
         onSubmit={handleSubmit}
         className="bg-white rounded-xl shadow-2xl p-8 max-w-sm w-full mx-4"
       >
-        <h2 className="text-xl font-semibold mb-2">Welcome to CollabDocs</h2>
+        <h2 className="text-xl font-semibold mb-2">Welcome to PostPaper</h2>
         <p className="text-gray-500 text-sm mb-6">
           Enter your display name to start collaborating
         </p>
