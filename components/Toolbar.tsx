@@ -74,7 +74,14 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
 
   return (
     <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-200 bg-white">
-      <Link href={sessionUser ? "/dashboard" : "/"} className="text-sm font-medium text-gray-700 mr-auto hover:text-black transition-colors">
+      <Link
+        href={sessionUser ? "/dashboard" : "/"}
+        className="flex items-center gap-2 text-sm font-medium text-gray-700 mr-auto hover:text-black transition-colors"
+      >
+        <span
+          aria-hidden="true"
+          className="inline-block w-4 h-4 rounded-sm bg-[#0BA70B]"
+        />
         PostPaper
       </Link>
 
