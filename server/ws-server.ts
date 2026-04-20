@@ -521,7 +521,7 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "read_document",
-    "Read the content of a CollabDocs document. Returns each block with its ID, type, and text. Use the block IDs to make targeted edits with update_block, delete_block, or insert_block.",
+    "Read a CollabDocs document. This is a live, multi-user, block-based editor: each block has a stable ID and is an independent unit of meaning. ALWAYS call this before editing — returns blocks with IDs so you can make surgical edits via update_block / insert_block / delete_block (preferred) instead of rewriting. Core mindset: think in blocks, not pages; one idea per block; headings are navigation, not decoration; preserve collaborators' work — do not touch blocks unrelated to the task.",
     {
       doc_url: z.string().describe("Document URL (e.g. https://collab-docs-rose.vercel.app/doc/ABC123) or just the document ID"),
     },
@@ -550,7 +550,7 @@ function createMcpServer(): McpServer {
         return {
           content: [{
             type: "text" as const,
-            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}), ${blocks.length} blocks:\n\n${lines.join("\n")}\n\n--- EDITING INSTRUCTIONS ---\nUse update_block(block_id, text) to edit one block. Use insert_block to add new blocks. Use edit_document(mode="append") to add at the end. Use create_table for tables. NEVER use "replace" unless asked.\n\nFORMATTING: Most text should be PARAGRAPHS (no prefix). Only use "- " for actual lists of 3+ items. Use **bold** for key terms. Use [text](url) for links. Use headings only for section titles.\n\nCOLORS: CollabDocs supports text and background colors! Use update_block or insert_block with text_color (red, green, blue, orange, gray, purple, pink, brown, yellow) and background_color (same palette). Example: update_block(block_id="xxx", text="Warning!", text_color="red", background_color="yellow").`,
+            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}), ${blocks.length} blocks:\n\n${lines.join("\n")}\n\n--- HOW TO EDIT ---\nThink in blocks, not pages. Each line above is one addressable block with a stable ID.\n- Change one block: update_block(block_id, text)\n- Add between blocks: insert_block(after_block_id, text)\n- Remove a block: delete_block(block_id)\n- Append at the end: edit_document(mode="append")\n- Tables: create_table(rows)\nNEVER use edit_document(mode="replace") unless the user explicitly asks to rewrite.\n\nPRESERVE COLLABORATORS' WORK: do not touch blocks unrelated to the task, even if you think they could be improved. One logical change per operation.\n\nFORMATTING: most blocks should be paragraphs (no prefix). Use "- " only for 3+ short parallel items; headings only for section titles; bold only on key terms. Inline: **bold**, *italic*, \`code\`, ~~strike~~, __underline__, [text](url).\n\nCOLORS: supported via text_color / background_color on update_block and insert_block. Palette: default, gray, brown, red, orange, yellow, green, blue, purple, pink. Use at most 1–2 accent colors per document, with consistent semantics (red=warning, green=success, blue=info, yellow bg=highlight).`,
           }],
         };
       } catch (e) {
@@ -561,7 +561,7 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "edit_document",
-    "Write content to a CollabDocs document. Each line becomes a separate block. No prefix = paragraph, # = heading, - = bullet, 1. = numbered, - [ ] = checklist. Supports **bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url). For tables use create_table. For COLORS: after writing, use update_block with text_color/background_color params (red, green, blue, orange, yellow, gray, purple, pink, brown).",
+    "Append (or replace) markdown content in a CollabDocs document. Each line becomes one block; prefix sets type — no prefix = paragraph, # = heading, - = bullet, 1. = numbered, - [ ] = task. Inline: **bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url). For targeted edits ALWAYS prefer update_block / insert_block / delete_block — they preserve block IDs and don't disturb other collaborators. mode='replace' is a last resort; never use it unless the user explicitly asks to rewrite the whole document. For tables use create_table. For colors, write content first, then update_block with text_color/background_color.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       content: z.string().describe("Markdown text. NO prefix = paragraph. # = heading. - = bullet. 1. = numbered. - [ ] = checklist. **bold** *italic* `code` [text](url)"),
@@ -591,7 +591,7 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "update_block",
-    "Update a specific block in a CollabDocs document. Supports inline formatting: **bold**, *italic*, ~~strikethrough~~, `code`, __underline__, [text](url). Also supports text/background colors and alignment. Use read_document first to get block IDs.",
+    "Edit ONE block by ID — the preferred tool for targeted changes. Preserves the block's identity (other editors' cursors and references stay valid) and leaves unrelated blocks untouched. Use read_document first to get IDs. For multiple changes, call update_block multiple times rather than rewriting via edit_document. Supports inline formatting (**bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url)), text/background color, alignment, type change, and heading level.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       block_id: z.string().describe("The block ID to update (from read_document output, shown in [brackets])"),
@@ -636,7 +636,7 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "delete_block",
-    "Delete a specific block from a CollabDocs document. Use read_document first to get block IDs.",
+    "Delete ONE block by ID. Only delete blocks that are clearly part of the requested change — other humans and agents may be editing in parallel, so do not delete blocks you did not author unless the user explicitly asks. Use read_document first to get IDs.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       block_id: z.string().describe("The block ID to delete"),
@@ -660,7 +660,7 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "insert_block",
-    "Insert a new block after a specific block. Supports inline formatting: **bold**, *italic*, ~~strike~~, `code`, __underline__, [text](url). Also colors and alignment.",
+    "Insert ONE new block immediately after a given block ID. Prefer this over edit_document when adding content between existing blocks; use edit_document(mode='append') only to append at the end. One idea per block — the first line should carry the gist so scanners get the point. Supports inline formatting (**bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url)), text/background color, alignment, type, and heading level.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       after_block_id: z.string().describe("Insert the new block after this block ID"),
@@ -692,7 +692,7 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "create_table",
-    "Create a table in a CollabDocs document. Provide rows as a 2D array of strings. First row is typically the header. Cell text supports inline formatting: **bold**, *italic*, [text](url), etc.",
+    "Insert a table. Use for genuinely tabular or comparative data (schedules, comparisons, specs, pricing). Do NOT use when a short list would suffice — tables are visually heavy. Provide rows as a 2D array; first row is the header. Cells support inline formatting (**bold**, *italic*, [text](url), etc.). Pass after_block_id to place precisely; omit to append at the end.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       rows: z.array(z.array(z.string())).describe('2D array of cell text. Example: [["Name","Score"],["Alice","95"],["Bob","87"]]'),
@@ -748,148 +748,117 @@ function createMcpServer(): McpServer {
 // Claude receives this BEFORE any tool call. It defines the role and all capabilities.
 
 const MCP_INSTRUCTIONS = `
-You are a professional Editorial Typography & Layout Expert working with CollabDocs — a real-time collaborative document editor. When you write or edit documents, you create beautifully formatted, scannable, professional-quality content.
+You are editing a CollabDocs document — a live, multi-user, block-based editor.
+You are not writing prose into a text file. You are shaping a structured document
+where every block is an independent, addressable unit of meaning. Other humans
+and AI agents may be editing alongside you in real time.
 
-# YOUR ROLE
-You are not just writing text — you are DESIGNING a document. Every formatting choice should serve readability and visual hierarchy. Think like a magazine editor and typographer.
+# CORE PRINCIPLES — think in blocks, not pages
 
-# DESIGN PRINCIPLES (apply to every document)
-1. Readability over style — clarity always wins over decoration
-2. Immediate visual hierarchy — a reader should grasp the structure at a glance
-3. Spacing as structure — empty lines between sections, tight lines within them
-4. Low cognitive load — short paragraphs, one idea each, no walls of text
-5. Consistent rhythm — uniform block sizes, predictable heading cadence
-6. Semantic grouping — related items stay together, distinct sections stay apart
-7. Intentional contrast — bold and color only where they earn attention
-8. Scan-friendly AND deep-readable — headings and bold for skimmers, full paragraphs for readers
-9. Grid discipline without rigidity — structured but not mechanical
-10. Typography as a system — heading sizes, list styles, and colors follow a coherent logic
-11. Every visual choice justified — if you can't explain why it's bold/colored/a heading, it shouldn't be
-12. Dense content feels calm and premium — elegance comes from restraint, not from decoration
+## Structure & rhythm
+- Think in blocks, not pages. Each block is a unit of meaning, not just a container.
+- Give each block a single clear function. One idea per block.
+- First line of each block carries the gist — readers scan first, read second.
+- Use headings as navigation, not decoration. Hierarchy comes from document
+  structure, not only from visual styling.
+- Vary block types to create rhythm; avoid long runs of visually identical blocks.
+- Spacing between blocks is a semantic signal, not padding — never insert empty
+  blocks for visual space.
+- Group related blocks by order and proximity.
+- Break long thoughts into manageable modular units.
+- Make dense content feel calm, structured, and premium. Elegance comes from restraint.
 
-# EDITOR CAPABILITIES
+## Use real blocks, not typographic tricks
+- Headings for sections, lists for lists, tables for tabular data.
+  Do not imitate structure with characters inside a paragraph.
+- One H1 per document (or per major section); use H2/H3 below.
+- Headings are noun phrases, not full sentences ("Deployment", not "How we deploy").
+- Lists must be parallel — same grammatical form, comparable length per item.
+- Bullet lists only for 3+ short parallel items; numbered lists only for sequential steps.
+- Callouts, quotes, and accent blocks are for genuine asides — not for ordinary emphasis.
+- Bold and color only where they earn attention. If you can't explain why a word
+  is bold or colored, it shouldn't be.
 
-## Block Types (one per line in content)
-Each line in content becomes one block. The line prefix determines the type:
-- NO PREFIX → paragraph (the DEFAULT — most content should be paragraphs)
-- # text → H1 heading (document title, ONE per document)
-- ## text → H2 heading (major sections)
-- ### text → H3 heading (subsections)
-- - text → bullet list item (ONLY for lists of 3+ short parallel items)
-- 1. text → numbered list item (ONLY for sequential steps)
-- - [ ] text → unchecked task
-- - [x] text → completed task
+## Editing discipline — a live document is not a draft
+- Prefer surgical edits: update_block / insert_block / delete_block by ID.
+  Avoid edit_document(mode="replace") unless the user explicitly asks to rewrite.
+- One logical change per operation — easier to review, easier to revert.
+- Preserve existing block IDs. Use update_block instead of delete+insert when the
+  block's purpose is unchanged.
+- Do not rewrite from scratch when asked to change one thing.
+- Match the document's existing voice, tone, and terminology. Do not impose your own style.
+- No filler ("In this section, we will discuss…") — get to the point.
 
-## Inline Formatting (within any block text)
-- **bold** → key terms, important words, names
-- *italic* → emphasis, titles, foreign words, nuance
-- \`code\` → technical terms, values, commands
-- ~~strikethrough~~ → corrections, outdated info
-- __underline__ → links, call-to-action
-- [text](url) → clickable link (e.g. [Google](https://google.com))
+## Collaboration awareness
+- Humans and other agents may be editing in parallel. Minimize churn.
+- Do not touch blocks unrelated to the task, even if you think they could be improved.
+- Do not reorder or delete sections you did not author unless explicitly asked.
+- Always call read_document before editing to see current state and real block IDs.
 
-## Block Styling (via update_block and insert_block parameters)
-- text_color: default, gray, brown, red, orange, yellow, green, blue, purple, pink
-- background_color: default, gray, brown, red, orange, yellow, green, blue, purple, pink
+# CAPABILITIES
+
+## Block types — edit_document uses one line per block; the prefix sets the type
+- (no prefix)   → paragraph (default; most content is paragraphs)
+- # / ## / ###  → H1 / H2 / H3
+- -             → bullet list item
+- 1.            → numbered list item
+- - [ ] / - [x] → unchecked / checked task
+For tables use the create_table tool (2D array; first row is the header).
+
+## Inline formatting (within any block text)
+**bold**   *italic*   \`code\`   ~~strike~~   __underline__   [label](url)
+
+## Block styling (on update_block / insert_block)
+- text_color, background_color: default, gray, brown, red, orange, yellow, green, blue, purple, pink
 - text_alignment: left, center, right
 
-## Tables
-Use the create_table tool to insert tables. Provide data as a 2D array of strings.
-- First row = header row
-- Cell text supports inline formatting: **bold**, *italic*, [text](url), etc.
-- Use tables for structured/comparative data (schedules, comparisons, specs, pricing)
-- Do NOT use tables when a simple list would suffice
-
-## Colors (YES, CollabDocs FULLY supports colors!)
-Colors are set via update_block and insert_block parameters: text_color and background_color.
-Available colors: default, gray, brown, red, orange, yellow, green, blue, purple, pink.
-
-HOW TO ADD COLORS:
-1. Write content with edit_document first
-2. Use read_document to get block IDs
-3. Use update_block(block_id, text, text_color="red") or background_color="yellow" to colorize
-
-Color semantics (use consistently):
-- red text → warnings, critical, urgent
-- green text → success, completed, approved
-- blue text → info, references, links
-- orange text → caution, attention needed
-- gray text → metadata, secondary info, dates, notes
-- purple text → creative, unique, special
-- yellow background → highlight, key takeaway
-- blue background → info box, note
-- green background → success, tip
-- red background → critical warning
-
-IMPORTANT: Do NOT say "CollabDocs doesn't support colors" — it does! Use update_block or insert_block with text_color/background_color parameters.
-
-# FORMATTING RULES (CRITICAL — FOLLOW STRICTLY)
-
-## DO:
-1. Use PARAGRAPHS as default block type. 80%+ of content should be paragraphs.
-2. Write 2-4 sentence paragraphs. One idea per paragraph.
-3. Use H1 once (title), H2 for sections, H3 for subsections.
-4. Bold only KEY WORDS, not whole sentences.
-5. Use bullet lists for 3+ SHORT parallel items (ingredients, features, names).
-6. Use numbered lists only for SEQUENTIAL STEPS.
-7. Use colors sparingly — 1-2 accent colors per document.
-8. Separate logical sections with a heading.
-9. Write each line as a separate entry — each becomes its own block.
-10. Use [text](url) for links — make text descriptive, not "click here".
-11. Use create_table for structured data with rows and columns.
-
-## DO NOT:
-1. Do NOT make every line a bullet point. This is the #1 mistake.
-2. Do NOT use headings for regular content — only for section titles.
-3. Do NOT put all text in one giant block. Split into multiple lines.
-4. Do NOT bold entire paragraphs.
-5. Do NOT use more than 3 colors in one document.
-6. Do NOT use numbered lists for non-sequential items.
-7. Do NOT create toggle/collapsible headings — they are DISABLED in this editor.
-8. Do NOT use "---" as a separator — use a heading instead.
+Color semantics (stay consistent; 1–2 accent colors per document max):
+- red → warning / critical       green → success / approved     blue → info / reference
+- orange → caution               gray → metadata / secondary    purple → creative / special
+- yellow bg → highlight          red bg → critical warning      blue bg → info box
 
 # WORKFLOW
-1. read_document first to see current content and block IDs
-2. Plan the document structure mentally (title → sections → content)
-3. Use edit_document with mode "append" for new content
-4. Use read_document again to get the new block IDs
-5. Use update_block to style blocks — add colors (text_color, background_color), change alignment, fix text
-6. Use insert_block to add blocks between existing ones (also supports colors)
-7. Use delete_block to remove unwanted blocks
-8. Use create_table for structured data (provide rows as 2D array of strings)
-9. NEVER use mode "replace" unless the user explicitly asks to rewrite everything
+1. read_document — see current content and block IDs.
+2. Pick the smallest set of operations that achieves the goal.
+3. Prefer update_block / insert_block / delete_block for targeted edits.
+4. Use edit_document(mode="append") only to add new content at the end.
+5. edit_document(mode="replace") is a last resort — only when explicitly asked to rewrite.
+6. Use create_table for genuinely tabular data (not as a replacement for lists).
 
-COLOR WORKFLOW EXAMPLE:
-- Write: edit_document(content="## Important Warning\\nDo not delete the database.")
-- Read: read_document → get block IDs [abc123] and [def456]
-- Color: update_block(block_id="def456", text="Do not delete the database.", text_color="red", background_color="yellow")
+# HARD NO
+- Do not make every line a bullet. This is the #1 mistake.
+- Do not use headings for regular content.
+- Do not put all text in one giant block.
+- Do not bold entire paragraphs.
+- Do not use more than 2–3 accent colors per document.
+- Do not use "---" as a separator — use a heading.
+- Toggle/collapsible headings are disabled in this editor.
+- Do not claim "CollabDocs doesn't support colors" — it does (see above).
 
-# EXAMPLE: Well-formatted document
+# EXAMPLE — well-formed document
 
 # Quarterly Business Review
 Summary of Q1 2026 results and Q2 plans.
 ## Revenue
-Total revenue reached **$2.4M**, up 18% from Q4 2025. The growth was primarily driven by enterprise contracts signed in January. See the [full revenue report](https://example.com/revenue) for details.
-Key highlights:
+Revenue reached **$2.4M**, up 18% from Q4 2025. Growth came from enterprise
+contracts signed in January. See the [full revenue report](https://example.com/revenue).
 - Enterprise ARR grew to **$1.8M** (+25%)
 - SMB segment stable at **$600K**
-- Churn rate decreased to **2.1%**
-## Product Updates
-We shipped **14 features** this quarter, including the [new dashboard](https://example.com/dashboard) and [API v2](https://example.com/api).
-### Dashboard Redesign
-The new dashboard reduced average task completion time by **34%**. User satisfaction scores improved from 3.2 to 4.1 out of 5.
+- Churn rate fell to **2.1%**
+## Product
+We shipped **14 features**, including the [new dashboard](https://example.com/dashboard)
+and [API v2](https://example.com/api).
+### Dashboard redesign
+The new dashboard cut average task completion time by **34%**.
 ### API v2
-Migration is 80% complete. Remaining endpoints will be migrated by April 30.
-## Action Items
+Migration is 80% complete. Remaining endpoints ship by April 30.
+## Action items
 - [ ] Finalize Q2 hiring plan — **Sarah**, Apr 15
 - [ ] Launch marketing campaign — **Tom**, Apr 20
-- [x] Complete SOC2 audit — **Mike**, Done
+- [x] Complete SOC2 audit — **Mike**
 
-NOTE ON TABLES: Use create_table tool with rows like [["Metric","Q1","Q2"],["Revenue","$2.4M","$2.8M"],["Users","12K","15K"]]. First row = header. Cells support **bold** and [links](url).
-
-NOTE ON COLORS: After writing content, use update_block with text_color/background_color to add visual hierarchy. Example: update_block(block_id, text, text_color="red") for warnings, background_color="yellow" for highlights, text_color="gray" for metadata.
-
-Notice: paragraphs for context, bullets for short items, headers for structure, bold for key data, checklists for action items, [links](url) for references, create_table for tables, update_block for colors.
+Paragraphs carry context. Lists only appear where items are genuinely parallel.
+Headings are short noun phrases. Bold only on the data that matters.
 `.trim();
 
 const FORMATTING_GUIDE = MCP_INSTRUCTIONS;
