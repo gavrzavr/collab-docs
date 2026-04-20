@@ -1440,8 +1440,15 @@ const httpServer = http.createServer(async (req, res) => {
         sendJson(res, 404, { error: "doc not found" });
         return;
       }
-      if (!ownerRow.owner_id || ownerRow.owner_id !== ownerId) {
-        sendJson(res, 403, { error: "not the owner" });
+      // No ownership check for POST: anyone with the /doc/:id URL can
+      // already edit the document, so gating view-link creation on
+      // "must be the owner" buys nothing and confuses collaborators.
+      // GET (list tokens) and DELETE (revoke) stay owner-only — those
+      // are more sensitive. `ownerId` is still required (supplied by
+      // the Next.js layer from an authenticated session) so random
+      // unauthenticated callers can't flood the table.
+      if (!ownerId) {
+        sendJson(res, 400, { error: "ownerId required" });
         return;
       }
       // Idempotent: if a token already exists for this (doc, role), return it.
