@@ -83,6 +83,17 @@ WS server persist the change before the HTTP handler returns. It's ugly but it
 exists because the WS server debounces saves at 500 ms. If you change the
 debounce, change the sleep.
 
+## UI language
+
+**All UI is English. Always.** Button labels, tooltips, alerts, error
+toasts, placeholders, empty states, dropdown descriptions — everything
+the user sees in the chrome is in English, no exceptions. This applies
+even if the conversation with the user is in Russian.
+
+The one deliberate exception is the hidden AI-setup instruction block
+in `app/doc/[id]/page.tsx` — that's content aimed at end users via an
+AI agent, not UI chrome.
+
 ## Do / don't
 
 - **Do** keep SQLite writes debounced — the WS server handles this.
@@ -92,6 +103,8 @@ debounce, change the sleep.
   clear the timer first.
 - **Don't** duplicate the Yjs traversal logic — if you need to extract blocks
   again, reuse `extractBlocksWithIds` or refactor both call sites.
+- **Don't** put Russian (or any non-English) strings into UI components.
+  See "UI language" above.
 
 ## Legacy code
 

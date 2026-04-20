@@ -40,8 +40,8 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         alert(err.error === "Not authenticated"
-          ? "Войди в аккаунт, чтобы создать view-ссылку"
-          : "Не удалось создать view-ссылку");
+          ? "Sign in to create a view link."
+          : "Could not create view link.");
         return;
       }
       const { token } = await res.json();
@@ -52,7 +52,7 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
       setTimeout(() => setCopied(null), 2000);
     } catch (err) {
       console.error("Failed to mint view link:", err);
-      alert("Не удалось создать view-ссылку");
+      alert("Could not create view link.");
     } finally {
       setMintingView(false);
     }
@@ -97,7 +97,7 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
       }
     } catch (err) {
       console.error("Failed to import .docx:", err);
-      alert("Не удалось импортировать файл. Убедитесь, что это .docx файл.");
+      alert("Could not import file. Please make sure it's a .docx file.");
     } finally {
       setImporting(false);
       if (fileInputRef.current) {
@@ -140,16 +140,16 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
                 className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors rounded-t-md"
               >
                 Copy edit link
-                <div className="text-xs text-gray-500">для соавторов</div>
+                <div className="text-xs text-gray-500">for collaborators</div>
               </button>
               <button
                 onClick={copyViewLink}
                 disabled={mintingView || !sessionUser}
                 className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors rounded-b-md disabled:opacity-50 disabled:cursor-not-allowed"
-                title={!sessionUser ? "Войди, чтобы создать view-ссылку" : undefined}
+                title={!sessionUser ? "Sign in to create a view link" : undefined}
               >
                 {mintingView ? "Creating..." : "Copy view link"}
-                <div className="text-xs text-gray-500">только чтение</div>
+                <div className="text-xs text-gray-500">read-only</div>
               </button>
             </div>
           </>
