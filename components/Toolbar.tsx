@@ -11,17 +11,51 @@ interface ToolbarProps {
 }
 
 export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarProps) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"edit" | "view" | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [mintingView, setMintingView] = useState(false);
   const [importing, setImporting] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const exportRef = useRef<HTMLDivElement>(null);
+  const shareRef = useRef<HTMLDivElement>(null);
 
-  async function copyLink() {
+  async function copyEditLink() {
     const url = `${window.location.origin}/doc/${docId}`;
     await navigator.clipboard.writeText(url);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setShareOpen(false);
+    setCopied("edit");
+    setTimeout(() => setCopied(null), 2000);
+  }
+
+  async function copyViewLink() {
+    if (mintingView) return;
+    setMintingView(true);
+    try {
+      const res = await fetch(`/api/v1/docs/${docId}/share-tokens`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "viewer" }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error === "Not authenticated"
+          ? "Войди в аккаунт, чтобы создать view-ссылку"
+          : "Не удалось создать view-ссылку");
+        return;
+      }
+      const { token } = await res.json();
+      const url = `${window.location.origin}/v/${token}`;
+      await navigator.clipboard.writeText(url);
+      setShareOpen(false);
+      setCopied("view");
+      setTimeout(() => setCopied(null), 2000);
+    } catch (err) {
+      console.error("Failed to mint view link:", err);
+      alert("Не удалось создать view-ссылку");
+    } finally {
+      setMintingView(false);
+    }
   }
 
   async function exportMarkdown() {
@@ -86,13 +120,41 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
         <span className="hidden sm:inline">PostPaper</span>
       </Link>
 
-      {/* 1. Share */}
-      <button
-        onClick={copyLink}
-        className="px-2.5 sm:px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors whitespace-nowrap shrink-0"
-      >
-        {copied ? "Copied!" : "Share"}
-      </button>
+      {/* 1. Share (dropdown: edit link + view link) */}
+      <div className="relative shrink-0" ref={shareRef}>
+        <button
+          onClick={() => setShareOpen((v) => !v)}
+          className="px-2.5 sm:px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors flex items-center gap-1 whitespace-nowrap"
+        >
+          {copied === "edit" ? "Copied!" : copied === "view" ? "View link copied!" : "Share"}
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        {shareOpen && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={() => setShareOpen(false)} />
+            <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20 min-w-[200px]">
+              <button
+                onClick={copyEditLink}
+                className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors rounded-t-md"
+              >
+                Copy edit link
+                <div className="text-xs text-gray-500">для соавторов</div>
+              </button>
+              <button
+                onClick={copyViewLink}
+                disabled={mintingView || !sessionUser}
+                className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors rounded-b-md disabled:opacity-50 disabled:cursor-not-allowed"
+                title={!sessionUser ? "Войди, чтобы создать view-ссылку" : undefined}
+              >
+                {mintingView ? "Creating..." : "Copy view link"}
+                <div className="text-xs text-gray-500">только чтение</div>
+              </button>
+            </div>
+          </>
+        )}
+      </div>
 
       {/* 2. Import */}
       <input

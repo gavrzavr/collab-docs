@@ -95,6 +95,76 @@ export interface AdminStats {
   };
 }
 
+// ─── Share tokens ────────────────────────────────────────────────────
+//
+// Tokens are short URL-safe strings that grant a specific role on a doc
+// without requiring the recipient to have an account. The ws-server owns
+// the table; these helpers are just a thin HTTP wrapper for the Next.js
+// layer.
+
+export type ShareRole = "viewer" | "commenter" | "editor";
+
+export interface ShareToken {
+  token: string;
+  role: ShareRole;
+  created_at: string;
+}
+
+/** Mint (or fetch existing — idempotent per (docId, role)) a share token. */
+export async function createShareToken(
+  docId: string,
+  role: ShareRole,
+  ownerId: string
+): Promise<{ token: string; role: ShareRole; created_at: string }> {
+  const res = await fetch(`${WS_API_URL}/api/docs/${encodeURIComponent(docId)}/share-tokens`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role, ownerId }),
+  });
+  if (!res.ok) {
+    throw new Error(`createShareToken failed: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
+export async function listShareTokens(
+  docId: string,
+  ownerId: string
+): Promise<{ tokens: ShareToken[] }> {
+  const res = await fetch(
+    `${WS_API_URL}/api/docs/${encodeURIComponent(docId)}/share-tokens?ownerId=${encodeURIComponent(ownerId)}`
+  );
+  if (!res.ok) {
+    throw new Error(`listShareTokens failed: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
+/** Public resolve — used by /v/[token] to discover the doc id. */
+export async function resolveShareToken(
+  token: string
+): Promise<{ docId: string; role: ShareRole } | null> {
+  const res = await fetch(`${WS_API_URL}/api/share-tokens/${encodeURIComponent(token)}`, {
+    cache: "no-store",
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`resolveShareToken failed: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
+export async function revokeShareToken(token: string, ownerId: string): Promise<void> {
+  const res = await fetch(`${WS_API_URL}/api/share-tokens/${encodeURIComponent(token)}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ownerId }),
+  });
+  if (!res.ok) {
+    throw new Error(`revokeShareToken failed: ${res.status} ${await res.text()}`);
+  }
+}
+
 export async function fetchAdminStats(days: number = 30): Promise<AdminStats> {
   const res = await fetch(`${WS_API_URL}/api/stats?days=${days}`, {
     // Never cache stats — always want a fresh number.

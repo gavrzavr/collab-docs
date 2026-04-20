@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import http from "http";
+import crypto from "crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
@@ -58,6 +59,18 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts DESC);
   CREATE INDEX IF NOT EXISTS idx_events_kind_ts ON events (kind, ts DESC);
   CREATE INDEX IF NOT EXISTS idx_events_doc_ts ON events (doc_id, ts DESC);
+  -- Share tokens: each (doc_id, role) pair has at most one token.
+  -- Roles: 'viewer' (read-only), 'commenter' (read + comments map only), 'editor' (full).
+  -- Tokens are long-lived; revoking is a DELETE.
+  CREATE TABLE IF NOT EXISTS share_tokens (
+    token TEXT PRIMARY KEY,
+    doc_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_share_tokens_doc ON share_tokens (doc_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_share_tokens_doc_role
+    ON share_tokens (doc_id, role);
 `);
 
 // ─── Event logging ───────────────────────────────────────────────────
@@ -71,6 +84,34 @@ const insertEventStmt = db.prepare(
 const getDocOwnerStmt = db.prepare(
   "SELECT owner_id FROM documents WHERE id = ?"
 );
+
+// ─── Share tokens ────────────────────────────────────────────────────
+//
+// A token is an opaque random string in the URL that grants a role
+// (viewer/commenter/editor) on one specific doc. Enforcement happens on
+// WS connect (see `wss.on("connection", ...)` below). We keep one token
+// per (doc, role) pair — mint is idempotent.
+const insertShareTokenStmt = db.prepare(
+  "INSERT INTO share_tokens (token, doc_id, role) VALUES (?, ?, ?)"
+);
+const getShareTokenStmt = db.prepare(
+  "SELECT token, doc_id, role, created_at FROM share_tokens WHERE token = ?"
+);
+const getShareTokenByDocRoleStmt = db.prepare(
+  "SELECT token, doc_id, role, created_at FROM share_tokens WHERE doc_id = ? AND role = ?"
+);
+const listShareTokensForDocStmt = db.prepare(
+  "SELECT token, role, created_at FROM share_tokens WHERE doc_id = ? ORDER BY role"
+);
+const deleteShareTokenStmt = db.prepare(
+  "DELETE FROM share_tokens WHERE token = ?"
+);
+
+type ShareRole = "viewer" | "commenter" | "editor";
+const VALID_SHARE_ROLES: readonly ShareRole[] = ["viewer", "commenter", "editor"] as const;
+function isValidShareRole(x: unknown): x is ShareRole {
+  return typeof x === "string" && (VALID_SHARE_ROLES as readonly string[]).includes(x);
+}
 
 function maskEmail(email: string | null | undefined): string | null {
   if (!email) return null;
@@ -417,6 +458,12 @@ function assertValidDocId(id: string): void {
 
 const messageSync = 0;
 const messageAwareness = 1;
+
+// y-protocols/sync sub-types. Kept here so the viewer filter can branch on
+// them without importing internals.
+const messageYjsSyncStep1 = 0;
+const messageYjsSyncStep2 = 1;
+const messageYjsUpdate = 2;
 
 // In-memory docs and their connections
 interface DocEntry {
@@ -1364,6 +1411,121 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // ─── Share tokens ──────────────────────────────────────────────────────
+  //
+  // Trust model (MVP): the Next.js layer authenticates the user via
+  // NextAuth and confirms they own the doc before calling us. We verify
+  // the doc has an owner and that the caller's claimed ownerId matches —
+  // same lightweight pattern as the rest of the doc metadata API. If
+  // ws-server is ever exposed beyond trusted callers, tighten this.
+
+  // POST /api/docs/:id/share-tokens — mint (or return existing) token
+  const shareTokensMatch = pathname.match(/^\/api\/docs\/([^/]+)\/share-tokens$/);
+  if (req.method === "POST" && shareTokensMatch) {
+    const docId = shareTokensMatch[1];
+    if (!isValidDocId(docId)) {
+      sendJson(res, 400, { error: "invalid doc id" });
+      return;
+    }
+    try {
+      const body = await parseBody(req);
+      const role = body.role;
+      const ownerId = (body.ownerId as string) || null;
+      if (!isValidShareRole(role)) {
+        sendJson(res, 400, { error: "invalid role", validRoles: VALID_SHARE_ROLES });
+        return;
+      }
+      const ownerRow = getDocOwnerStmt.get(docId) as { owner_id: string | null } | undefined;
+      if (!ownerRow) {
+        sendJson(res, 404, { error: "doc not found" });
+        return;
+      }
+      if (!ownerRow.owner_id || ownerRow.owner_id !== ownerId) {
+        sendJson(res, 403, { error: "not the owner" });
+        return;
+      }
+      // Idempotent: if a token already exists for this (doc, role), return it.
+      const existing = getShareTokenByDocRoleStmt.get(docId, role) as
+        | { token: string; doc_id: string; role: string; created_at: string }
+        | undefined;
+      if (existing) {
+        sendJson(res, 200, { token: existing.token, docId, role, createdAt: existing.created_at, created: false });
+        return;
+      }
+      const token = crypto.randomBytes(12).toString("base64url");
+      insertShareTokenStmt.run(token, docId, role);
+      sendJson(res, 201, { token, docId, role, created: true });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
+  // GET /api/docs/:id/share-tokens?ownerId=... — list tokens for this doc
+  if (req.method === "GET" && shareTokensMatch) {
+    const docId = shareTokensMatch[1];
+    if (!isValidDocId(docId)) {
+      sendJson(res, 400, { error: "invalid doc id" });
+      return;
+    }
+    const ownerId = url.searchParams.get("ownerId");
+    const ownerRow = getDocOwnerStmt.get(docId) as { owner_id: string | null } | undefined;
+    if (!ownerRow) {
+      sendJson(res, 404, { error: "doc not found" });
+      return;
+    }
+    if (!ownerRow.owner_id || ownerRow.owner_id !== ownerId) {
+      sendJson(res, 403, { error: "not the owner" });
+      return;
+    }
+    const rows = listShareTokensForDocStmt.all(docId);
+    sendJson(res, 200, { tokens: rows });
+    return;
+  }
+
+  // DELETE /api/share-tokens/:token — revoke token (owner of the doc only)
+  const shareTokenDeleteMatch = pathname.match(/^\/api\/share-tokens\/([A-Za-z0-9_-]+)$/);
+  if (req.method === "DELETE" && shareTokenDeleteMatch) {
+    const token = shareTokenDeleteMatch[1];
+    try {
+      const body = (await parseBody(req).catch(() => ({}))) as Record<string, unknown>;
+      const ownerId = (body.ownerId as string) || url.searchParams.get("ownerId") || null;
+      const row = getShareTokenStmt.get(token) as
+        | { token: string; doc_id: string; role: string; created_at: string }
+        | undefined;
+      if (!row) {
+        sendJson(res, 404, { error: "token not found" });
+        return;
+      }
+      const ownerRow = getDocOwnerStmt.get(row.doc_id) as { owner_id: string | null } | undefined;
+      if (!ownerRow?.owner_id || ownerRow.owner_id !== ownerId) {
+        sendJson(res, 403, { error: "not the owner" });
+        return;
+      }
+      deleteShareTokenStmt.run(token);
+      sendJson(res, 200, { revoked: true });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
+  // GET /api/share-tokens/:token — resolve token (public: callers need
+  // this to route /v/:token → /doc/:id). Only returns the docId+role,
+  // never anything sensitive about the doc itself.
+  if (req.method === "GET" && shareTokenDeleteMatch) {
+    const token = shareTokenDeleteMatch[1];
+    const row = getShareTokenStmt.get(token) as
+      | { token: string; doc_id: string; role: string; created_at: string }
+      | undefined;
+    if (!row) {
+      sendJson(res, 404, { error: "token not found" });
+      return;
+    }
+    sendJson(res, 200, { docId: row.doc_id, role: row.role });
+    return;
+  }
+
   // GET /api/docs/:id/debug — dump XML structure
   const debugMatch = pathname.match(/^\/api\/docs\/([^/]+)\/debug$/);
   if (req.method === "GET" && debugMatch) {
@@ -1514,12 +1676,48 @@ const wss = new WebSocketServer({ server: httpServer });
 
 wss.on("connection", (ws, req) => {
   // Extract doc name from URL path, e.g., /docId
-  const docName = (req.url || "/").slice(1).split("?")[0] || "default";
+  const rawUrl = req.url || "/";
+  const docName = rawUrl.slice(1).split("?")[0] || "default";
   if (!isValidDocId(docName)) {
     console.warn(`Rejected WS connection with invalid docId: ${JSON.stringify(docName)}`);
     ws.close(1008, "Invalid document ID");
     return;
   }
+
+  // ─── Share-token gating ────────────────────────────────────────────────
+  //
+  // When the client connects via /v/:token (viewer link) or similar, the
+  // Next.js layer passes `?token=...` on the WS URL. We look it up and pin
+  // the connection's role to whatever the token grants. Absence of a token
+  // means "owner/editor path" — current default until PR 2 adds full ACL.
+  //
+  // Important: we still accept tokenless connections (the authenticated
+  // owner editing their own doc goes through this branch). PR 2 will
+  // tighten that.
+  let role: ShareRole = "editor";
+  try {
+    const qs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?") + 1) : "";
+    const params = new URLSearchParams(qs);
+    const token = params.get("token");
+    if (token) {
+      const row = getShareTokenStmt.get(token) as
+        | { token: string; doc_id: string; role: string; created_at: string }
+        | undefined;
+      if (!row || row.doc_id !== docName || !isValidShareRole(row.role)) {
+        console.warn(`[ws] rejected connection: bad token for doc=${docName}`);
+        ws.close(1008, "Invalid share token");
+        return;
+      }
+      role = row.role;
+    }
+  } catch (e) {
+    console.error("[ws] token parse failed:", e);
+    ws.close(1011, "Internal error");
+    return;
+  }
+  // Stash on the ws so message/broadcast handlers can consult it.
+  (ws as unknown as { role: ShareRole }).role = role;
+
   const entry = getOrCreateDoc(docName);
   entry.conns.add(ws);
 
@@ -1546,6 +1744,27 @@ wss.on("connection", (ws, req) => {
       const msgType = decoding.readVarUint(decoder);
       switch (msgType) {
         case messageSync: {
+          // Viewers are a special case: we have to answer their syncStep1
+          // (otherwise they'd never get the document state) but MUST drop
+          // any syncStep2 / update they push back to us, otherwise a
+          // tampered client could edit a read-only doc. readSyncMessage()
+          // processes all three opaquely, so we branch by sub-type.
+          if (role === "viewer") {
+            const subType = decoding.readVarUint(decoder);
+            if (subType === messageYjsSyncStep1) {
+              const sv = decoding.readVarUint8Array(decoder);
+              const respEncoder = encoding.createEncoder();
+              encoding.writeVarUint(respEncoder, messageSync);
+              encoding.writeVarUint(respEncoder, messageYjsSyncStep2);
+              encoding.writeVarUint8Array(
+                respEncoder,
+                Y.encodeStateAsUpdate(entry.ydoc, sv)
+              );
+              send(ws, encoding.toUint8Array(respEncoder));
+            }
+            // syncStep2 / update from a viewer are silently dropped.
+            break;
+          }
           const respEncoder = encoding.createEncoder();
           encoding.writeVarUint(respEncoder, messageSync);
           syncProtocol.readSyncMessage(decoder, respEncoder, entry.ydoc, ws);

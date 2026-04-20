@@ -18,6 +18,16 @@ interface EditorProps {
   onSynced?: () => void;
   registerImportHtml?: (fn: (html: string) => void) => void;
   registerEditor?: (editor: unknown) => void;
+  /**
+   * Share token to pass to the ws-server on the WS URL. Required when
+   * connecting as a viewer/commenter; absent for the owner/editor path.
+   */
+  shareToken?: string;
+  /**
+   * Disable edits in the UI. This is security-by-UI only — the ws-server
+   * also enforces read-only on viewer tokens (drops their sync updates).
+   */
+  readOnly?: boolean;
 }
 
 // Custom BlockTypeSelect that handles Yjs string props (level: "1" vs 1)
@@ -67,7 +77,7 @@ function CollabBlockTypeSelect() {
   return <Components.FormattingToolbar.Select className="bn-select" items={selectItems} />;
 }
 
-export default function Editor({ docId, userName, userColor, onSynced, registerImportHtml, registerEditor }: EditorProps) {
+export default function Editor({ docId, userName, userColor, onSynced, registerImportHtml, registerEditor, shareToken, readOnly }: EditorProps) {
   const [ready, setReady] = useState(false);
   const ydocRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
@@ -81,7 +91,12 @@ export default function Editor({ docId, userName, userColor, onSynced, registerI
   useEffect(() => {
     const ydoc = ydocRef.current!;
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `ws://${window.location.hostname}:1234`;
-    const provider = new WebsocketProvider(wsUrl, docId, ydoc);
+    const provider = new WebsocketProvider(
+      wsUrl,
+      docId,
+      ydoc,
+      shareToken ? { params: { token: shareToken } } : undefined
+    );
     providerRef.current = provider;
 
     provider.awareness.setLocalStateField("user", {
@@ -104,7 +119,7 @@ export default function Editor({ docId, userName, userColor, onSynced, registerI
       provider.destroy();
       providerRef.current = null;
     };
-  }, [docId, userName, userColor, onSynced]);
+  }, [docId, userName, userColor, onSynced, shareToken]);
 
   const editor = useCreateBlockNote(
     {
@@ -149,7 +164,7 @@ export default function Editor({ docId, userName, userColor, onSynced, registerI
   }
 
   return (
-    <BlockNoteView editor={editor} theme="light" formattingToolbar={false}>
+    <BlockNoteView editor={editor} theme="light" formattingToolbar={false} editable={!readOnly}>
       <FormattingToolbarController
         formattingToolbar={() => {
           const defaultItems = getFormattingToolbarItems();

@@ -28,9 +28,14 @@ interface Block {
 interface DocClientProps {
   id: string;
   initialBlocks: Block[];
+  /** Passed when entering via /v/:token — enables viewer mode. */
+  shareToken?: string;
+  /** Role granted by the share token (if any). Defaults to "editor". */
+  role?: "viewer" | "commenter" | "editor";
 }
 
-export default function DocClient({ id, initialBlocks }: DocClientProps) {
+export default function DocClient({ id, initialBlocks, shareToken, role }: DocClientProps) {
+  const readOnly = role === "viewer";
   const [user, setUser] = useState<{ name: string; color: string; image?: string } | null>(null);
   const [checked, setChecked] = useState(false);
   const [sessionUser, setSessionUser] = useState<{ name: string; email: string; image?: string } | null>(null);
@@ -156,6 +161,8 @@ export default function DocClient({ id, initialBlocks }: DocClientProps) {
               onSynced={handleSynced}
               registerImportHtml={(fn) => { importHtmlRef.current = fn; }}
               registerEditor={handleRegisterEditor}
+              shareToken={shareToken}
+              readOnly={readOnly}
             />
           </div>
         </div>
