@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-const API_BASE_URL = process.env.API_BASE_URL || "https://collab-docs-rose.vercel.app";
+const API_BASE_URL = process.env.API_BASE_URL || "https://postpaper.co";
 
 function extractDocId(docUrl: string): string {
   // Accept full URL like http://host/doc/abc123 or just the ID
@@ -21,7 +21,7 @@ const server = new McpServer({
 
 server.tool(
   "read_document",
-  "Read the full content of a collaborative document. Accepts a URL like https://collab-docs-rose.vercel.app/doc/ABC123 or just the document ID.",
+  "Read the full content of a collaborative document. Accepts a URL like https://postpaper.co/doc/ABC123 or just the document ID.",
   {
     doc_url: z.string().describe("The document URL or ID"),
   },

@@ -491,7 +491,7 @@ function send(ws: WebSocket, message: Uint8Array) {
 // Creates a new MCP server instance with tools for reading and editing docs.
 // Each HTTP request gets its own instance (stateless mode).
 
-const VERCEL_URL = process.env.VERCEL_URL || "https://collab-docs-rose.vercel.app";
+const VERCEL_URL = process.env.VERCEL_URL || "https://postpaper.co";
 
 /** Build an MCP error result with a structured code the model can read.
  *  Output format: `[code: <code>] <human message>` + isError=true.
@@ -523,7 +523,7 @@ function createMcpServer(): McpServer {
     "read_document",
     "Read a CollabDocs document. This is a live, multi-user, block-based editor: each block has a stable ID and is an independent unit of meaning. ALWAYS call this before editing — returns blocks with IDs so you can make surgical edits via update_block / insert_block / delete_block (preferred) instead of rewriting. Core mindset: think in blocks, not pages; one idea per block; headings are navigation, not decoration; preserve collaborators' work — do not touch blocks unrelated to the task.",
     {
-      doc_url: z.string().describe("Document URL (e.g. https://collab-docs-rose.vercel.app/doc/ABC123) or just the document ID"),
+      doc_url: z.string().describe("Document URL (e.g. https://postpaper.co/doc/ABC123) or just the document ID"),
     },
     async ({ doc_url }) => {
       const docId = extractDocIdFromUrl(doc_url);

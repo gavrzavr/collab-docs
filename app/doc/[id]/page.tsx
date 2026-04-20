@@ -3,7 +3,7 @@ import { withYDoc, readBlocks } from "@/lib/yjs-api-bridge";
 import DocClient from "./DocClient";
 
 const BASE_URL = process.env.NEXTAUTH_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
-const MCP_URL = "https://collab-docs-production.up.railway.app/mcp";
+const MCP_URL = "https://ws.postpaper.co/mcp";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const { id } = await params;

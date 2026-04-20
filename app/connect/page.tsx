@@ -5,8 +5,8 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 
-const MCP_URL = "https://collab-docs-production.up.railway.app/mcp";
-const APP_HOST = "collab-docs-rose.vercel.app";
+const MCP_URL = "https://ws.postpaper.co/mcp";
+const APP_HOST = "postpaper.co";
 
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);

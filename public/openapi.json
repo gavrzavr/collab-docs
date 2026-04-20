@@ -7,7 +7,7 @@
   },
   "servers": [
     {
-      "url": "https://collab-docs-rose.vercel.app",
+      "url": "https://postpaper.co",
       "description": "Production server"
     }
   ],
@@ -22,7 +22,7 @@
             "name": "docId",
             "in": "path",
             "required": true,
-            "description": "The document ID (from the URL, e.g. for https://collab-docs-rose.vercel.app/doc/abc123 the docId is abc123)",
+            "description": "The document ID (from the URL, e.g. for https://postpaper.co/doc/abc123 the docId is abc123)",
             "schema": {
               "type": "string"
             }

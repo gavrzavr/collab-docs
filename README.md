@@ -68,7 +68,7 @@ The MCP endpoint is public (no auth). That's OK for the current MVP because
 document IDs are unguessable nanoids — anyone without the ID can't find the
 doc. Revisit this before moving to sensitive content.
 
-**Endpoint:** `https://collab-docs-production.up.railway.app/mcp`
+**Endpoint:** `https://ws.postpaper.co/mcp`
 
 ### Claude.ai (web)
 
@@ -85,7 +85,7 @@ doc. Revisit this before moving to sensitive content.
 ### Claude Code (CLI)
 
 ```bash
-claude mcp add --transport http collab-docs https://collab-docs-production.up.railway.app/mcp
+claude mcp add --transport http collab-docs https://ws.postpaper.co/mcp
 ```
 
 ### Verifying the connection
@@ -101,13 +101,13 @@ You should see a live, block-based editor framing and six tools:
 ### Giving Claude a document
 
 Paste the document URL or ID into the chat, e.g.
-`https://collab-docs-rose.vercel.app/doc/abc123`. Claude extracts the ID and
+`https://postpaper.co/doc/abc123`. Claude extracts the ID and
 calls `read_document`. IDs must match `^[A-Za-z0-9_-]{1,64}$`; anything else
 is rejected server-side.
 
 Example prompts:
 
-- *"Read https://collab-docs-rose.vercel.app/doc/abc123 and summarize it."*
+- *"Read https://postpaper.co/doc/abc123 and summarize it."*
 - *"In that doc, turn the third bullet into a heading and make the price bold."*
 - *"Add a table of Q1 metrics after the Revenue section."*
 

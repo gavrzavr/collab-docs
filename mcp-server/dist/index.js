@@ -4,7 +4,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const mcp_js_1 = require("@modelcontextprotocol/sdk/server/mcp.js");
 const stdio_js_1 = require("@modelcontextprotocol/sdk/server/stdio.js");
 const zod_1 = require("zod");
-const API_BASE_URL = process.env.API_BASE_URL || "https://collab-docs-rose.vercel.app";
+const API_BASE_URL = process.env.API_BASE_URL || "https://postpaper.co";
 function extractDocId(docUrl) {
     // Accept full URL like http://host/doc/abc123 or just the ID
     const match = docUrl.match(/\/doc\/([^/?#]+)/);
@@ -17,7 +17,7 @@ const server = new mcp_js_1.McpServer({
     name: "collab-docs",
     version: "0.2.0",
 });
-server.tool("read_document", "Read the full content of a collaborative document. Accepts a URL like https://collab-docs-rose.vercel.app/doc/ABC123 or just the document ID.", {
+server.tool("read_document", "Read the full content of a collaborative document. Accepts a URL like https://postpaper.co/doc/ABC123 or just the document ID.", {
     doc_url: zod_1.z.string().describe("The document URL or ID"),
 }, async ({ doc_url }) => {
     const docId = extractDocId(doc_url);
