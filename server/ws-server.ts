@@ -72,6 +72,16 @@ const getDocOwnerStmt = db.prepare(
   "SELECT owner_id FROM documents WHERE id = ?"
 );
 
+function maskEmail(email: string | null | undefined): string | null {
+  if (!email) return null;
+  const at = email.indexOf("@");
+  if (at <= 0) return email; // not an email, leave as-is
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  const shown = local.slice(0, 1) + "***";
+  return `${shown}@${domain}`;
+}
+
 function logEvent(
   kind: string,
   docId: string | null,
@@ -256,7 +266,7 @@ function computeAdminStats(days: number): AdminStats {
   ).all(`-${days} days`) as Array<{ kind: string; count: number }>;
 
   // ── Top docs by AI activity (last window) ────────────────────────────
-  const topDocs = db.prepare(
+  const topDocsRaw = db.prepare(
     `SELECT e.doc_id, d.owner_id, d.title, d.updated_at AS last_edited,
             COUNT(*) AS ai_calls
        FROM events e
@@ -271,6 +281,12 @@ function computeAdminStats(days: number): AdminStats {
     doc_id: string; owner_id: string | null; title: string | null;
     last_edited: string | null; ai_calls: number;
   }>;
+  // Mask owner emails to avoid leaking PII over a public endpoint.
+  // "mikhail@gmail.com" → "m***@gmail.com"; falls through for non-emails.
+  const topDocs = topDocsRaw.map((d) => ({
+    ...d,
+    owner_id: maskEmail(d.owner_id),
+  }));
 
   // ── Weekly cohort retention ──────────────────────────────────────────
   //
@@ -1365,24 +1381,23 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  // ─── Admin analytics endpoint ───────────────────────────────────────────
+  // ─── Analytics endpoint ─────────────────────────────────────────────────
   //
-  // Behind a shared secret (ADMIN_SECRET env). The Next.js admin page proxies
-  // to this endpoint — end users never hit it directly. Reads are heavy-ish
-  // SQL (cohort retention) but still cheap on a hobby dataset; revisit if we
-  // ever run this on tens of thousands of docs.
-  if (req.method === "GET" && pathname === "/api/admin/stats") {
-    const expected = process.env.ADMIN_SECRET;
-    const authHeader = req.headers.authorization || "";
-    if (!expected || authHeader !== `Bearer ${expected}`) {
-      sendJson(res, 401, { error: "Unauthorized" });
-      return;
-    }
+  // Public on purpose: returns aggregates only, and owner emails are masked
+  // (m***@domain.com) so no PII leaks. Safe enough for an MVP hobby app;
+  // revisit if we ever have competitive value in private metrics.
+  //
+  // Reads do some heavy-ish SQL (cohort retention) but still cheap on hobby
+  // dataset; revisit if we ever run this on tens of thousands of docs.
+  if (
+    req.method === "GET" &&
+    (pathname === "/api/admin/stats" || pathname === "/api/stats")
+  ) {
     const days = Math.min(90, Math.max(1, Number(url.searchParams.get("days")) || 30));
     try {
       sendJson(res, 200, computeAdminStats(days));
     } catch (e) {
-      console.error("[admin/stats] failed", e);
+      console.error("[stats] failed", e);
       sendJson(res, 500, { error: String(e) });
     }
     return;

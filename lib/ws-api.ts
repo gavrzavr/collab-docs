@@ -96,17 +96,12 @@ export interface AdminStats {
 }
 
 export async function fetchAdminStats(days: number = 30): Promise<AdminStats> {
-  const secret = process.env.ADMIN_SECRET;
-  if (!secret) {
-    throw new Error("ADMIN_SECRET is not configured on Next.js side");
-  }
-  const res = await fetch(`${WS_API_URL}/api/admin/stats?days=${days}`, {
-    headers: { Authorization: `Bearer ${secret}` },
-    // Never cache admin stats — always want a fresh number.
+  const res = await fetch(`${WS_API_URL}/api/stats?days=${days}`, {
+    // Never cache stats — always want a fresh number.
     cache: "no-store",
   });
   if (!res.ok) {
-    throw new Error(`Admin stats fetch failed: ${res.status} ${await res.text()}`);
+    throw new Error(`Stats fetch failed: ${res.status} ${await res.text()}`);
   }
   return res.json();
 }
