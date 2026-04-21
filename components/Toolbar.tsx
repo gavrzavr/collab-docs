@@ -10,32 +10,32 @@ interface ToolbarProps {
   onImportHtml?: (html: string) => void;
   /** Hide mutating actions (Import) when the user is on a read-only share link. */
   readOnly?: boolean;
+  /** Owner-only actions (minting editor invites) require this flag. */
+  isOwner?: boolean;
 }
 
-export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly }: ToolbarProps) {
+export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, isOwner }: ToolbarProps) {
   const [copied, setCopied] = useState<"edit" | "view" | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [mintingView, setMintingView] = useState(false);
+  const [mintingEdit, setMintingEdit] = useState(false);
   const [viewLinkError, setViewLinkError] = useState<string | null>(null);
+  const [editLinkError, setEditLinkError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [viewLinkUrl, setViewLinkUrl] = useState<string | null>(null);
+  const [editLinkUrl, setEditLinkUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const exportRef = useRef<HTMLDivElement>(null);
   const shareRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const mintStartedRef = useRef(false);
 
-  const editLinkUrl = typeof window !== "undefined"
-    ? `${window.location.origin}/doc/${docId}`
-    : `/doc/${docId}`;
-
-  // Pre-mint the viewer token as soon as the Share dropdown opens so both
-  // rows are ready to copy in one click. Idempotent per (docId, viewer) —
-  // re-opening doesn't pile up DB rows. `mintStartedRef` prevents double
-  // fires (without needing mintingView/viewLinkUrl in the deps — those
-  // trigger cascade re-runs that leave the loading state stuck).
+  // Pre-mint both tokens as soon as the Share dropdown opens so both rows
+  // are ready to copy in one click. Idempotent per (docId, role) at the
+  // ws-server level — re-opening doesn't pile up DB rows. Editor invite
+  // is owner-only; for non-owners we skip that mint and show a hint.
   useEffect(() => {
     if (!shareOpen) {
       mintStartedRef.current = false;
@@ -46,36 +46,48 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly }: 
     setMintingView(true);
     setViewLinkError(null);
     let cancelled = false;
-    (async () => {
+
+    async function mint(role: "viewer" | "editor"): Promise<{ token?: string; error?: string }> {
       try {
         const res = await fetch(`/api/v1/docs/${docId}/share-tokens`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ role: "viewer" }),
+          body: JSON.stringify({ role }),
         });
-        if (cancelled) return;
         if (!res.ok) {
           const msg =
-            res.status === 401 ? "Sign in to create a view link."
-            : res.status === 403 ? "Only the document owner can create share links."
+            res.status === 401 ? "Sign in to create share links."
+            : res.status === 403 ? "Only the document owner can create this link."
             : res.status === 404 ? "Document not found."
-            : `Could not create view link (${res.status}).`;
-          setViewLinkError(msg);
-          return;
+            : `Could not create link (${res.status}).`;
+          return { error: msg };
         }
         const { token } = await res.json();
-        if (cancelled) return;
-        setViewLinkUrl(`${window.location.origin}/v/${token}`);
+        return { token };
       } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
+    (async () => {
+      const v = await mint("viewer");
+      if (cancelled) return;
+      if (v.token) setViewLinkUrl(`${window.location.origin}/v/${v.token}`);
+      else if (v.error) setViewLinkError(v.error);
+      setMintingView(false);
+
+      if (isOwner) {
+        setMintingEdit(true);
+        setEditLinkError(null);
+        const e = await mint("editor");
         if (cancelled) return;
-        console.error("Failed to mint view link:", err);
-        setViewLinkError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (!cancelled) setMintingView(false);
+        if (e.token) setEditLinkUrl(`${window.location.origin}/e/${e.token}`);
+        else if (e.error) setEditLinkError(e.error);
+        setMintingEdit(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [shareOpen, sessionUser, docId]);
+  }, [shareOpen, sessionUser, docId, isOwner]);
 
   async function handleSignOut() {
     // NextAuth's POST /api/auth/signout requires a CSRF token. Same
@@ -210,35 +222,56 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly }: 
         {shareOpen && (
           <>
             <div className="fixed inset-0 z-10" onClick={() => setShareOpen(false)} />
-            <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20 w-[320px]">
-              {/* Edit link row */}
-              <div className="px-4 py-3">
-                <div className="flex items-baseline justify-between mb-1.5">
-                  <div className="text-sm font-medium text-gray-900">Edit link</div>
-                  <div className="text-xs text-gray-500">for collaborators</div>
+            <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20 w-[340px]">
+              {/* Editor invite row — owner only. Non-owners see a hint
+                  because only the owner can hand out edit permissions. */}
+              {isOwner ? (
+                <div className="px-4 py-3">
+                  <div className="flex items-baseline justify-between mb-1.5">
+                    <div className="text-sm font-medium text-gray-900">Invite to edit</div>
+                    <div className="text-xs text-gray-500">sign-in required</div>
+                  </div>
+                  {!sessionUser ? (
+                    <div className="text-xs text-gray-500 py-1">Sign in to create an invite link.</div>
+                  ) : editLinkError ? (
+                    <div className="text-xs text-red-600 py-1">{editLinkError}</div>
+                  ) : (
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        readOnly
+                        value={editLinkUrl || ""}
+                        placeholder={mintingEdit ? "Creating..." : ""}
+                        onFocus={(e) => e.target.select()}
+                        className="flex-1 min-w-0 px-2 py-1 text-xs border border-gray-200 rounded bg-gray-50 focus:outline-none focus:border-gray-400"
+                      />
+                      <button
+                        onClick={() => copyShareLink("edit")}
+                        disabled={!editLinkUrl}
+                        className="px-3 py-1 text-xs font-medium bg-gray-900 hover:bg-gray-700 text-white rounded transition-colors shrink-0 w-[60px] disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {copied === "edit" ? "Copied" : "Copy"}
+                      </button>
+                    </div>
+                  )}
+                  <p className="text-[11px] text-gray-500 mt-2 leading-snug">
+                    Whoever opens this link signs in and is added to the document as an editor.
+                  </p>
                 </div>
-                <div className="flex gap-1.5">
-                  <input
-                    type="text"
-                    readOnly
-                    value={editLinkUrl}
-                    onFocus={(e) => e.target.select()}
-                    className="flex-1 min-w-0 px-2 py-1 text-xs border border-gray-200 rounded bg-gray-50 focus:outline-none focus:border-gray-400"
-                  />
-                  <button
-                    onClick={() => copyShareLink("edit")}
-                    className="px-3 py-1 text-xs font-medium bg-gray-900 hover:bg-gray-700 text-white rounded transition-colors shrink-0 w-[60px]"
-                  >
-                    {copied === "edit" ? "Copied" : "Copy"}
-                  </button>
+              ) : (
+                <div className="px-4 py-3">
+                  <div className="text-sm font-medium text-gray-900 mb-1">Invite to edit</div>
+                  <p className="text-xs text-gray-500 leading-snug">
+                    Only the document owner can hand out edit access. Ask them for an invite link.
+                  </p>
                 </div>
-              </div>
+              )}
 
-              {/* View link row */}
+              {/* View link row — anyone signed in can mint / copy. */}
               <div className="px-4 py-3 border-t border-gray-100">
                 <div className="flex items-baseline justify-between mb-1.5">
                   <div className="text-sm font-medium text-gray-900">View link</div>
-                  <div className="text-xs text-gray-500">read-only</div>
+                  <div className="text-xs text-gray-500">read-only, no sign-in</div>
                 </div>
                 {!sessionUser ? (
                   <div className="text-xs text-gray-500 py-1">Sign in to create a view link.</div>

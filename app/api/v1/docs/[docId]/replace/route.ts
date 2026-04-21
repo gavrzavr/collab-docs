@@ -1,4 +1,5 @@
 import { withYDoc, readBlocks, applyOperations } from "@/lib/yjs-api-bridge";
+import { authorizeDocAccess } from "@/lib/doc-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,13 @@ export async function GET(
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
+  const authz = await authorizeDocAccess(request, docId, "write");
+  if (!authz.ok) {
+    return new Response(authz.error, {
+      status: authz.status,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
   const url = new URL(request.url);
   const text = url.searchParams.get("text");
 

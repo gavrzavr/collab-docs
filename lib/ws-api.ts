@@ -154,6 +154,73 @@ export async function resolveShareToken(
   return res.json();
 }
 
+// ─── Collaborator ACL (owner + invited model) ───────────────────────
+
+export type DocAccess = "owner" | "editor" | "commenter";
+
+/** Resolve (docId, email) -> role. null means no access. */
+export async function getDocAccess(
+  docId: string,
+  email: string
+): Promise<{ docId: string; access: DocAccess | null; ownerId: string | null } | null> {
+  const res = await fetch(
+    `${WS_API_URL}/api/docs/${encodeURIComponent(docId)}/access?email=${encodeURIComponent(email)}`,
+    { cache: "no-store" }
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`getDocAccess failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+/** Redeem an invite token: add `email` to the doc's ACL with the token's role. */
+export async function redeemInviteToken(
+  docId: string,
+  email: string,
+  role: "editor" | "commenter",
+  viaToken: string
+): Promise<{ docId: string; email: string; role: string }> {
+  const res = await fetch(
+    `${WS_API_URL}/api/docs/${encodeURIComponent(docId)}/collaborators`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, role, viaToken }),
+    }
+  );
+  if (!res.ok) throw new Error(`redeemInviteToken failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+/** Owner-only: list collaborators for a doc. */
+export async function listCollaborators(
+  docId: string,
+  ownerId: string
+): Promise<{ collaborators: Array<{ user_email: string; role: string; granted_at: string }> }> {
+  const res = await fetch(
+    `${WS_API_URL}/api/docs/${encodeURIComponent(docId)}/collaborators?ownerId=${encodeURIComponent(ownerId)}`,
+    { cache: "no-store" }
+  );
+  if (!res.ok) throw new Error(`listCollaborators failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+/** Owner-only: remove a collaborator. */
+export async function removeCollaborator(
+  docId: string,
+  email: string,
+  ownerId: string
+): Promise<void> {
+  const res = await fetch(
+    `${WS_API_URL}/api/docs/${encodeURIComponent(docId)}/collaborators/${encodeURIComponent(email)}`,
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ownerId }),
+    }
+  );
+  if (!res.ok) throw new Error(`removeCollaborator failed: ${res.status} ${await res.text()}`);
+}
+
 export async function revokeShareToken(token: string, ownerId: string): Promise<void> {
   const res = await fetch(`${WS_API_URL}/api/share-tokens/${encodeURIComponent(token)}`, {
     method: "DELETE",

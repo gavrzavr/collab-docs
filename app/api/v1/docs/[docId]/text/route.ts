@@ -1,4 +1,5 @@
 import { readDocContent, appendDocContent, replaceDocContent } from "@/lib/ws-api";
+import { authorizeDocAccess } from "@/lib/doc-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -7,10 +8,12 @@ export const dynamic = "force-dynamic";
  * Read document content — proxied to WS server
  */
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
+  const authz = await authorizeDocAccess(request, docId, "read");
+  if (!authz.ok) return Response.json({ error: authz.error }, { status: authz.status });
   try {
     const result = await readDocContent(docId);
     return Response.json(result);
@@ -45,6 +48,8 @@ export async function POST(
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
+  const authz = await authorizeDocAccess(request, docId, "write");
+  if (!authz.ok) return Response.json({ error: authz.error }, { status: authz.status });
   const text = await extractText(request);
 
   if (!text.trim()) {
@@ -68,6 +73,8 @@ export async function PUT(
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
+  const authz = await authorizeDocAccess(request, docId, "write");
+  if (!authz.ok) return Response.json({ error: authz.error }, { status: authz.status });
   const text = await extractText(request);
 
   if (!text.trim()) {

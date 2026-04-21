@@ -1,12 +1,18 @@
 import { withYDoc, readBlocks, applyOperations, type Operation } from "@/lib/yjs-api-bridge";
+import { authorizeDocAccess } from "@/lib/doc-auth";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
+
+  const authz = await authorizeDocAccess(request, docId, "read");
+  if (!authz.ok) {
+    return Response.json({ error: authz.error }, { status: authz.status });
+  }
 
   try {
     const content = await withYDoc(docId, (_ydoc, fragment) => {
@@ -31,6 +37,11 @@ export async function PATCH(
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
+
+  const authz = await authorizeDocAccess(request, docId, "write");
+  if (!authz.ok) {
+    return Response.json({ error: authz.error }, { status: authz.status });
+  }
 
   let body: { author?: string; operations: Operation[] };
   try {

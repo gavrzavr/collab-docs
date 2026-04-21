@@ -1,4 +1,5 @@
 import { readDocContent } from "@/lib/ws-api";
+import { authorizeDocAccess } from "@/lib/doc-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -6,10 +7,18 @@ const BASE_URL = process.env.NEXTAUTH_URL || (process.env.VERCEL_URL ? `https://
 const MCP_URL = "https://ws.postpaper.co/mcp";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+
+  const authz = await authorizeDocAccess(request, id, "read");
+  if (!authz.ok) {
+    return new Response(authz.error, {
+      status: authz.status,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
 
   let content = "";
   try {

@@ -17,6 +17,10 @@ import {
   extractDocumentMarkdown as sharedExtractDocumentMarkdown,
   extractTitle as sharedExtractTitle,
 } from "../lib/yjs-blocks";
+import {
+  verifySessionToken,
+  BRIDGE_SUBJECT,
+} from "../lib/session-jwt";
 
 const PORT = Number(process.env.PORT) || Number(process.env.WS_PORT) || 1234;
 // On Railway with a Volume mounted at /app/data, use that for persistence.
@@ -71,7 +75,36 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_share_tokens_doc ON share_tokens (doc_id);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_share_tokens_doc_role
     ON share_tokens (doc_id, role);
+  -- Per-document collaborator list — the "ACL" for the owner + invited model.
+  -- Owner is NOT stored here (lives in documents.owner_id); everyone else who
+  -- has write-ish access must have a row here. Viewer access is handled via
+  -- anonymous share_tokens (no identity needed) and does not go in this table.
+  CREATE TABLE IF NOT EXISTS document_collaborators (
+    doc_id TEXT NOT NULL,
+    user_email TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('editor','commenter')),
+    granted_at TEXT NOT NULL DEFAULT (datetime('now')),
+    granted_via_token TEXT,
+    PRIMARY KEY (doc_id, user_email)
+  );
+  CREATE INDEX IF NOT EXISTS idx_collaborators_user ON document_collaborators (user_email);
 `);
+
+// ─── Session auth (Next.js ↔ ws-server) ──────────────────────────────
+//
+// Next.js owns the NextAuth session cookie; ws-server runs on a separate
+// host and can't read it. Instead, Next.js mints a short-lived HS256
+// token carrying {sub, doc, role, exp} and hands it to DocClient, which
+// passes it on the WS connect URL. We verify the HMAC here. Same secret
+// also authenticates internal bridge traffic via BRIDGE_SUBJECT.
+const WS_SESSION_SECRET = process.env.WS_SESSION_SECRET || "";
+if (!WS_SESSION_SECRET) {
+  console.error(
+    "[ws-server] WS_SESSION_SECRET is not set — all non-share-token WS " +
+    "connections will be rejected. Set this env var to match the value " +
+    "configured in the Next.js deployment."
+  );
+}
 
 // ─── Event logging ───────────────────────────────────────────────────
 //
@@ -111,6 +144,64 @@ type ShareRole = "viewer" | "commenter" | "editor";
 const VALID_SHARE_ROLES: readonly ShareRole[] = ["viewer", "commenter", "editor"] as const;
 function isValidShareRole(x: unknown): x is ShareRole {
   return typeof x === "string" && (VALID_SHARE_ROLES as readonly string[]).includes(x);
+}
+
+// ─── Collaborator membership ─────────────────────────────────────────
+//
+// DocAccess resolves "does this email have write-ish access to this doc?".
+// Owner (documents.owner_id) and collaborators (document_collaborators)
+// are both checked. The ordering matters: "owner" beats "editor" beats
+// "commenter", so the most privileged level is returned first.
+type DocAccess = "owner" | "editor" | "commenter";
+const upsertCollaboratorStmt = db.prepare(
+  `INSERT INTO document_collaborators (doc_id, user_email, role, granted_via_token)
+   VALUES (?, ?, ?, ?)
+   ON CONFLICT(doc_id, user_email) DO UPDATE SET
+     role = excluded.role,
+     granted_via_token = COALESCE(document_collaborators.granted_via_token, excluded.granted_via_token)`
+);
+const getCollaboratorStmt = db.prepare(
+  "SELECT role FROM document_collaborators WHERE doc_id = ? AND user_email = ?"
+);
+const removeCollaboratorStmt = db.prepare(
+  "DELETE FROM document_collaborators WHERE doc_id = ? AND user_email = ?"
+);
+const listCollaboratorsStmt = db.prepare(
+  "SELECT user_email, role, granted_at FROM document_collaborators WHERE doc_id = ? ORDER BY granted_at"
+);
+
+/**
+ * Resolve (docId, email) -> access level, or null if the caller has none.
+ * Returns null for unknown docs as well — callers should 404 in that case.
+ */
+function getDocAccess(
+  docId: string,
+  email: string | null | undefined
+): DocAccess | null {
+  if (!email) return null;
+  const ownerRow = getDocOwnerStmt.get(docId) as { owner_id: string | null } | undefined;
+  if (!ownerRow) return null;
+  if (ownerRow.owner_id && ownerRow.owner_id === email) return "owner";
+  const row = getCollaboratorStmt.get(docId, email) as { role: string } | undefined;
+  if (row && (row.role === "editor" || row.role === "commenter")) {
+    return row.role;
+  }
+  return null;
+}
+
+function isDocOwner(docId: string, email: string | null | undefined): boolean {
+  if (!email) return false;
+  const ownerRow = getDocOwnerStmt.get(docId) as { owner_id: string | null } | undefined;
+  return !!ownerRow && ownerRow.owner_id === email;
+}
+
+function addCollaborator(
+  docId: string,
+  email: string,
+  role: "editor" | "commenter",
+  viaToken: string | null
+): void {
+  upsertCollaboratorStmt.run(docId, email, role, viaToken);
 }
 
 function maskEmail(email: string | null | undefined): string | null {
@@ -1950,15 +2041,16 @@ const httpServer = http.createServer(async (req, res) => {
         sendJson(res, 404, { error: "doc not found" });
         return;
       }
-      // No ownership check for POST: anyone with the /doc/:id URL can
-      // already edit the document, so gating view-link creation on
-      // "must be the owner" buys nothing and confuses collaborators.
-      // GET (list tokens) and DELETE (revoke) stay owner-only — those
-      // are more sensitive. `ownerId` is still required (supplied by
-      // the Next.js layer from an authenticated session) so random
-      // unauthenticated callers can't flood the table.
       if (!ownerId) {
         sendJson(res, 400, { error: "ownerId required" });
+        return;
+      }
+      // Editor / commenter invite tokens grant *write* access to the doc —
+      // minting them is therefore an owner-only operation. Viewer tokens
+      // stay mintable by any signed-in user: /v/:token is read-only and
+      // owner-knowledge of the docId is not a secret we rely on.
+      if ((role === "editor" || role === "commenter") && ownerRow.owner_id !== ownerId) {
+        sendJson(res, 403, { error: "Only the owner can mint editor or commenter invite tokens" });
         return;
       }
       // Idempotent: if a token already exists for this (doc, role), return it.
@@ -2048,6 +2140,165 @@ const httpServer = http.createServer(async (req, res) => {
       role: row.role,
       ownerId: ownerRow?.owner_id ?? null,
     });
+    return;
+  }
+
+  // ─── Collaborators (access model B: owner + invited) ─────────────────
+  //
+  // These endpoints back the Next.js invite-redemption flow and the future
+  // "manage access" UI. All three require `ownerId` in the body/query and
+  // are *not* public — the Next.js layer supplies a real authenticated
+  // email from NextAuth before calling us. Defense in depth: we still
+  // owner-check server-side even when the caller claims to have done so.
+
+  // GET /api/docs/:id/access?email=... — resolve (doc, email) -> role
+  // Returns { access: "owner" | "editor" | "commenter" | null, docId }.
+  // Used by Next.js SSR to decide whether to render /doc/:id or 403.
+  // Intentionally does NOT require ownerId — any authenticated caller can
+  // check their own access. The `email` param is the identity being
+  // checked, Next.js derives it from the session before calling.
+  const accessMatch = pathname.match(/^\/api\/docs\/([^/]+)\/access$/);
+  if (req.method === "GET" && accessMatch) {
+    const docId = accessMatch[1];
+    if (!isValidDocId(docId)) {
+      sendJson(res, 400, { error: "invalid doc id" });
+      return;
+    }
+    const email = url.searchParams.get("email");
+    const ownerRow = getDocOwnerStmt.get(docId) as { owner_id: string | null } | undefined;
+    if (!ownerRow) {
+      sendJson(res, 404, { error: "doc not found" });
+      return;
+    }
+    const access = getDocAccess(docId, email);
+    sendJson(res, 200, {
+      docId,
+      access,
+      ownerId: ownerRow.owner_id,
+    });
+    return;
+  }
+
+  // POST /api/docs/:id/collaborators — add a user to the doc's ACL.
+  // Body: { email, role, viaToken? }.
+  //
+  // Two authorized paths:
+  //   (a) ownerId matches the doc's owner → admin add (owner invites by email).
+  //   (b) viaToken present + matches an editor/commenter share_token for this
+  //       doc → self-redemption (user clicked an invite link). In this case
+  //       the body's `email` is the invitee's own email; no ownerId required.
+  const collabMatch = pathname.match(/^\/api\/docs\/([^/]+)\/collaborators$/);
+  if (req.method === "POST" && collabMatch) {
+    const docId = collabMatch[1];
+    if (!isValidDocId(docId)) {
+      sendJson(res, 400, { error: "invalid doc id" });
+      return;
+    }
+    try {
+      const body = await parseBody(req);
+      const email = (body.email as string) || "";
+      const requestedRole = body.role as string;
+      const viaToken = (body.viaToken as string) || null;
+      const ownerId = (body.ownerId as string) || null;
+
+      if (!email || !email.includes("@")) {
+        sendJson(res, 400, { error: "email required" });
+        return;
+      }
+      if (requestedRole !== "editor" && requestedRole !== "commenter") {
+        sendJson(res, 400, { error: "role must be editor or commenter" });
+        return;
+      }
+      const ownerRow = getDocOwnerStmt.get(docId) as { owner_id: string | null } | undefined;
+      if (!ownerRow) {
+        sendJson(res, 404, { error: "doc not found" });
+        return;
+      }
+
+      let authorized = false;
+      let tokenToStore: string | null = null;
+
+      if (ownerId && ownerRow.owner_id === ownerId) {
+        authorized = true;
+        tokenToStore = viaToken;
+      } else if (viaToken) {
+        const tokenRow = getShareTokenStmt.get(viaToken) as
+          | { token: string; doc_id: string; role: string }
+          | undefined;
+        if (
+          tokenRow &&
+          tokenRow.doc_id === docId &&
+          (tokenRow.role === "editor" || tokenRow.role === "commenter") &&
+          tokenRow.role === requestedRole
+        ) {
+          authorized = true;
+          tokenToStore = viaToken;
+        }
+      }
+
+      if (!authorized) {
+        sendJson(res, 403, { error: "must be owner or present a valid invite token" });
+        return;
+      }
+
+      addCollaborator(docId, email, requestedRole, tokenToStore);
+      logEvent("collaborator.add", docId, { email: maskEmail(email), role: requestedRole, via: tokenToStore ? "token" : "owner" });
+      sendJson(res, 201, { docId, email, role: requestedRole });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
+  // GET /api/docs/:id/collaborators?ownerId=... — list (owner-only).
+  if (req.method === "GET" && collabMatch) {
+    const docId = collabMatch[1];
+    if (!isValidDocId(docId)) {
+      sendJson(res, 400, { error: "invalid doc id" });
+      return;
+    }
+    const ownerId = url.searchParams.get("ownerId");
+    const ownerRow = getDocOwnerStmt.get(docId) as { owner_id: string | null } | undefined;
+    if (!ownerRow) {
+      sendJson(res, 404, { error: "doc not found" });
+      return;
+    }
+    if (!ownerRow.owner_id || ownerRow.owner_id !== ownerId) {
+      sendJson(res, 403, { error: "not the owner" });
+      return;
+    }
+    const rows = listCollaboratorsStmt.all(docId);
+    sendJson(res, 200, { collaborators: rows });
+    return;
+  }
+
+  // DELETE /api/docs/:id/collaborators/:email — remove (owner-only).
+  const collabDeleteMatch = pathname.match(/^\/api\/docs\/([^/]+)\/collaborators\/([^/]+)$/);
+  if (req.method === "DELETE" && collabDeleteMatch) {
+    const docId = collabDeleteMatch[1];
+    const email = decodeURIComponent(collabDeleteMatch[2]);
+    if (!isValidDocId(docId)) {
+      sendJson(res, 400, { error: "invalid doc id" });
+      return;
+    }
+    try {
+      const body = (await parseBody(req).catch(() => ({}))) as Record<string, unknown>;
+      const ownerId = (body.ownerId as string) || url.searchParams.get("ownerId") || null;
+      const ownerRow = getDocOwnerStmt.get(docId) as { owner_id: string | null } | undefined;
+      if (!ownerRow) {
+        sendJson(res, 404, { error: "doc not found" });
+        return;
+      }
+      if (!ownerRow.owner_id || ownerRow.owner_id !== ownerId) {
+        sendJson(res, 403, { error: "not the owner" });
+        return;
+      }
+      const info = removeCollaboratorStmt.run(docId, email);
+      logEvent("collaborator.remove", docId, { email: maskEmail(email) });
+      sendJson(res, 200, { removed: info.changes > 0 });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
     return;
   }
 
@@ -2209,39 +2460,83 @@ wss.on("connection", (ws, req) => {
     return;
   }
 
-  // ─── Share-token gating ────────────────────────────────────────────────
+  // ─── Auth gating for the WS handshake ─────────────────────────────────
   //
-  // When the client connects via /v/:token (viewer link) or similar, the
-  // Next.js layer passes `?token=...` on the WS URL. We look it up and pin
-  // the connection's role to whatever the token grants. Absence of a token
-  // means "owner/editor path" — current default until PR 2 adds full ACL.
+  // A connecting client must present one of two credentials:
   //
-  // Important: we still accept tokenless connections (the authenticated
-  // owner editing their own doc goes through this branch). PR 2 will
-  // tighten that.
-  let role: ShareRole = "editor";
+  //   (a) ?token=<share-token>   — the /v/:token viewer flow, or any other
+  //       anonymous link-based access. The token is resolved in the DB and
+  //       its role pins the connection (viewer/commenter/editor).
+  //
+  //   (b) ?session=<session-jwt> — issued by the Next.js layer after it
+  //       verified the caller's NextAuth session and doc-level access
+  //       (owner or collaborator). We re-verify the HMAC, confirm the JWT
+  //       is scoped to this doc and not expired, and pin the role.
+  //
+  // No credential => reject. This closes the "any browser with the URL can
+  // edit" hole that /v/:token exposed: previously a viewer could copy the
+  // editor URL and open it to escalate.
+  let role: ShareRole = "viewer";
+  let sessionSubject: string | null = null;
   try {
     const qs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?") + 1) : "";
     const params = new URLSearchParams(qs);
-    const token = params.get("token");
-    if (token) {
-      const row = getShareTokenStmt.get(token) as
+    const shareToken = params.get("token");
+    const sessionTok = params.get("session");
+
+    if (shareToken) {
+      const row = getShareTokenStmt.get(shareToken) as
         | { token: string; doc_id: string; role: string; created_at: string }
         | undefined;
       if (!row || row.doc_id !== docName || !isValidShareRole(row.role)) {
-        console.warn(`[ws] rejected connection: bad token for doc=${docName}`);
+        console.warn(`[ws] rejected: bad share token for doc=${docName}`);
         ws.close(1008, "Invalid share token");
         return;
       }
       role = row.role;
+    } else if (sessionTok) {
+      const verified = verifySessionToken(sessionTok, WS_SESSION_SECRET);
+      if (!verified.ok) {
+        console.warn(`[ws] rejected: session token ${verified.reason} for doc=${docName}`);
+        ws.close(1008, `Invalid session (${verified.reason})`);
+        return;
+      }
+      if (verified.claims.doc !== docName) {
+        console.warn(`[ws] rejected: session doc mismatch got=${verified.claims.doc} want=${docName}`);
+        ws.close(1008, "Session scoped to a different document");
+        return;
+      }
+      // Bridge tokens come with sub=__bridge__; treat them as internal
+      // editor principals. For human users we still need membership to be
+      // valid at connect time — we check, but only as a sanity gate, since
+      // the Next.js layer was the authority that minted this token.
+      if (verified.claims.sub === BRIDGE_SUBJECT) {
+        role = "editor";
+      } else {
+        const access = getDocAccess(docName, verified.claims.sub);
+        if (!access) {
+          console.warn(`[ws] rejected: no live access for ${maskEmail(verified.claims.sub)} on doc=${docName}`);
+          ws.close(1008, "Access revoked");
+          return;
+        }
+        // Owner behaves as editor on the wire — there's no "owner-only"
+        // permission on individual Yjs messages, only the UI surfaces it.
+        role = access === "owner" ? "editor" : (access as ShareRole);
+      }
+      sessionSubject = verified.claims.sub;
+    } else {
+      console.warn(`[ws] rejected: no credentials for doc=${docName}`);
+      ws.close(1008, "Authentication required");
+      return;
     }
   } catch (e) {
-    console.error("[ws] token parse failed:", e);
+    console.error("[ws] auth failed:", e);
     ws.close(1011, "Internal error");
     return;
   }
   // Stash on the ws so message/broadcast handlers can consult it.
-  (ws as unknown as { role: ShareRole }).role = role;
+  (ws as unknown as { role: ShareRole; subject: string | null }).role = role;
+  (ws as unknown as { role: ShareRole; subject: string | null }).subject = sessionSubject;
 
   const entry = getOrCreateDoc(docName);
   entry.conns.add(ws);

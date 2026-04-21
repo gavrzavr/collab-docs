@@ -2,6 +2,7 @@ import { type NextRequest } from "next/server";
 import { withYDoc, readBlocks } from "@/lib/yjs-api-bridge";
 import { blocksToMarkdown } from "@/lib/export-markdown";
 import { blocksToDocx } from "@/lib/export-docx";
+import { authorizeDocAccess } from "@/lib/doc-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +11,10 @@ export async function GET(
   { params }: { params: Promise<{ docId: string }> }
 ) {
   const { docId } = await params;
+  const authz = await authorizeDocAccess(request, docId, "read");
+  if (!authz.ok) {
+    return Response.json({ error: authz.error }, { status: authz.status });
+  }
   const format = request.nextUrl.searchParams.get("format") || "md";
 
   try {

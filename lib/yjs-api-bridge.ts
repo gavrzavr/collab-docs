@@ -1,6 +1,7 @@
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import WebSocket from "ws";
+import { mintSessionToken, BRIDGE_SUBJECT } from "./session-jwt";
 
 const WS_URL = process.env.WS_URL || (process.env.NEXT_PUBLIC_WS_URL ? process.env.NEXT_PUBLIC_WS_URL : "ws://localhost:1234");
 
@@ -63,13 +64,35 @@ function waitForSync(provider: WebsocketProvider): Promise<void> {
   });
 }
 
+/** Mint a short-lived editor token for the bridge to authenticate its WS
+ *  connection. The bridge has no user identity — the Next.js route handler
+ *  that called it already checked the caller's permissions. ws-server treats
+ *  `BRIDGE_SUBJECT` as a trusted internal principal. */
+function mintBridgeToken(docId: string): string {
+  const secret = process.env.WS_SESSION_SECRET || "";
+  if (!secret) {
+    throw new Error(
+      "WS_SESSION_SECRET is not set. The REST bridge cannot authenticate to " +
+      "the WS server without it. Set this env var to the same value on both " +
+      "the Next.js app and the ws-server deployment."
+    );
+  }
+  return mintSessionToken(
+    { sub: BRIDGE_SUBJECT, doc: docId, role: "editor" },
+    secret,
+    120
+  );
+}
+
 export async function withYDoc<T>(
   docId: string,
   fn: (ydoc: Y.Doc, fragment: Y.XmlFragment) => T
 ): Promise<T> {
   const ydoc = new Y.Doc();
+  const sessionToken = mintBridgeToken(docId);
   const provider = new WebsocketProvider(WS_URL, docId, ydoc, {
     WebSocketPolyfill: WebSocket as unknown as typeof globalThis.WebSocket,
+    params: { session: sessionToken },
   });
 
   try {

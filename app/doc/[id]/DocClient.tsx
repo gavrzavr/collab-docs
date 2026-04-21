@@ -33,8 +33,16 @@ interface DocClientProps {
   initialBlocks: Block[];
   /** Passed when entering via /v/:token — enables viewer mode. */
   shareToken?: string;
+  /** Short-lived HS256 JWT attesting to the signed-in user's access role,
+   *  minted by `/doc/[id]/page.tsx`. The WS server verifies it. Not used when
+   *  `shareToken` is present — share tokens are a separate auth path that
+   *  doesn't require an identity. */
+  sessionToken?: string;
   /** Role granted by the share token (if any). Defaults to "editor". */
   role?: "viewer" | "commenter" | "editor";
+  /** True when the signed-in user owns this document. Enables owner-only
+   *  UI (minting editor invite links, managing collaborators). */
+  isOwner?: boolean;
 }
 
 /**
@@ -47,7 +55,7 @@ interface DocClientProps {
 const FIRST_PAGE_ID = "blocknote";
 const DEFAULT_FIRST_PAGE_TITLE = "Page 1";
 
-export default function DocClient({ id, initialBlocks, shareToken, role }: DocClientProps) {
+export default function DocClient({ id, initialBlocks, shareToken, sessionToken, role, isOwner }: DocClientProps) {
   const readOnly = role === "viewer";
   const [user, setUser] = useState<{ name: string; color: string; image?: string } | null>(null);
   const [checked, setChecked] = useState(false);
@@ -134,11 +142,20 @@ export default function DocClient({ id, initialBlocks, shareToken, role }: DocCl
   useEffect(() => {
     if (!user) return;
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `ws://${window.location.hostname}:1234`;
+    // Auth path priority: share-token (anon viewer) > session-JWT (signed-in
+    // member). If neither is present the WS server will reject the connection;
+    // that shouldn't happen because /doc/:id SSR mints a JWT and /v/:token
+    // supplies a share-token — but we don't invent a fallback here.
+    const params: Record<string, string> | undefined = shareToken
+      ? { token: shareToken }
+      : sessionToken
+      ? { session: sessionToken }
+      : undefined;
     const p = new WebsocketProvider(
       wsUrl,
       id,
       ydoc,
-      shareToken ? { params: { token: shareToken } } : undefined
+      params ? { params } : undefined
     );
     p.awareness.setLocalStateField("user", { name: user.name, color: user.color });
 
@@ -154,7 +171,7 @@ export default function DocClient({ id, initialBlocks, shareToken, role }: DocCl
       setProvider(null);
       setSynced(false);
     };
-  }, [id, ydoc, shareToken, user]);
+  }, [id, ydoc, shareToken, sessionToken, user]);
 
   // ── Subscribe to the pages list in Yjs ─────────────────────────────
   //
@@ -247,7 +264,7 @@ export default function DocClient({ id, initialBlocks, shareToken, role }: DocCl
 
   return (
     <div className="flex flex-col h-screen">
-      <Toolbar docId={id} sessionUser={sessionUser} onImportHtml={handleImportHtml} readOnly={readOnly} />
+      <Toolbar docId={id} sessionUser={sessionUser} onImportHtml={handleImportHtml} readOnly={readOnly} isOwner={isOwner} />
 
       {/* Tab bar. Rendered whenever the editor is ready so users can discover
           multi-page via the "+" affordance even on single-page docs. Hidden in

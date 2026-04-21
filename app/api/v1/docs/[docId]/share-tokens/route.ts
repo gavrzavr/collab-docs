@@ -2,6 +2,7 @@ import { auth } from "@/auth";
 import {
   createShareToken,
   listShareTokens,
+  getDocAccess,
   type ShareRole,
 } from "@/lib/ws-api";
 
@@ -42,6 +43,15 @@ export async function POST(
       { error: "role must be one of viewer|commenter|editor" },
       { status: 400 }
     );
+  }
+
+  // Membership gate: only the owner or an invited editor/commenter can
+  // mint share tokens. Without this check a stranger who happens to know
+  // the docId could mint a viewer token for themselves and read the doc
+  // via /v/:token — bypassing the /doc/:id owner-or-invited gate.
+  const access = await getDocAccess(docId, ownerId).catch(() => null);
+  if (!access || !access.access) {
+    return Response.json({ error: "Not a collaborator on this document" }, { status: 403 });
   }
 
   try {
