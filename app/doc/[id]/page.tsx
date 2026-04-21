@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { auth, signIn } from "@/auth";
+import { redirect } from "next/navigation";
+import { auth } from "@/auth";
 import { withYDoc, readBlocks } from "@/lib/yjs-api-bridge";
 import { getDocAccess } from "@/lib/ws-api";
 import { mintSessionToken, type SessionRole } from "@/lib/session-jwt";
@@ -66,8 +67,10 @@ export default async function DocPage({ params }: { params: Promise<{ id: string
 
   if (!email) {
     // Kick off Google sign-in and come back to this same URL.
-    await signIn("google", { redirectTo: `/doc/${id}` });
-    return null;
+    // `signIn()` from a server component doesn't work for GET renders — it
+    // wants a form action POST. Use redirect() to the signin endpoint with
+    // a callbackUrl and let NextAuth drive the flow.
+    redirect(`/api/auth/signin?callbackUrl=${encodeURIComponent(`/doc/${id}`)}`);
   }
 
   const access = await getDocAccess(id, email).catch(() => null);

@@ -1,6 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import type { Metadata } from "next";
-import { auth, signIn } from "@/auth";
+import { auth } from "@/auth";
 import { resolveShareToken, redeemInviteToken } from "@/lib/ws-api";
 
 export const dynamic = "force-dynamic";
@@ -45,8 +45,7 @@ export default async function InvitePage({
   const email = session?.user?.email;
 
   if (!email) {
-    await signIn("google", { redirectTo: `/e/${token}` });
-    return null;
+    redirect(`/api/auth/signin?callbackUrl=${encodeURIComponent(`/e/${token}`)}`);
   }
 
   // Owner clicking their own invite link — skip the ACL write, just send
