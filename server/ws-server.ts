@@ -741,7 +741,14 @@ function insertBlockAfter(ydoc: Y.Doc, afterBlockId: string, type: string, text:
   return newBlock.getAttribute("id") || null;
 }
 
-/** Create a table block from a 2D array of cell text */
+/** Create a table block from a 2D array of cell text.
+ *  Normalizes every row to the header row's column count — shorter rows are
+ *  padded with empty strings, longer rows are truncated. This is a defensive
+ *  guard: MCP callers sometimes pass ragged grids (e.g. the analytics updater
+ *  emitting rows with trailing empty pipes), and any ragged row silently
+ *  becomes real Y.XmlElement cells that bloat the CRDT state and make the
+ *  document laggy to render. The header is the schema; anything past it is
+ *  a bug. */
 function createTableBlock(rows: string[][]): { element: Y.XmlElement; id: string } {
   const container = new Y.XmlElement("blockContainer");
   const id = generateBlockId();
@@ -749,7 +756,14 @@ function createTableBlock(rows: string[][]): { element: Y.XmlElement; id: string
 
   const table = new Y.XmlElement("table");
 
-  for (const rowData of rows) {
+  const cols = rows[0]?.length ?? 0;
+  const normalized = rows.map((r) => {
+    if (r.length === cols) return r;
+    if (r.length > cols) return r.slice(0, cols);
+    return [...r, ...Array(cols - r.length).fill("")];
+  });
+
+  for (const rowData of normalized) {
     const row = new Y.XmlElement("tableRow");
     for (const cellText of rowData) {
       const cell = new Y.XmlElement("tableCell");
