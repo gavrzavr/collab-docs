@@ -23,6 +23,7 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
   const exportRef = useRef<HTMLDivElement>(null);
   const shareRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const mintStartedRef = useRef(false);
 
   const editLinkUrl = typeof window !== "undefined"
     ? `${window.location.origin}/doc/${docId}`
@@ -30,14 +31,20 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
 
   // Pre-mint the viewer token as soon as the Share dropdown opens so both
   // rows are ready to copy in one click. Idempotent per (docId, viewer) —
-  // re-opening doesn't pile up DB rows. Only fires when the user is
-  // signed in; otherwise the row stays disabled with a tooltip.
+  // re-opening doesn't pile up DB rows. `mintStartedRef` prevents double
+  // fires (without needing mintingView/viewLinkUrl in the deps — those
+  // trigger cascade re-runs that leave the loading state stuck).
   useEffect(() => {
-    if (!shareOpen || !sessionUser || viewLinkUrl || mintingView) return;
+    if (!shareOpen) {
+      mintStartedRef.current = false;
+      return;
+    }
+    if (!sessionUser || mintStartedRef.current) return;
+    mintStartedRef.current = true;
+    setMintingView(true);
+    setViewLinkError(null);
     let cancelled = false;
     (async () => {
-      setMintingView(true);
-      setViewLinkError(null);
       try {
         const res = await fetch(`/api/v1/docs/${docId}/share-tokens`, {
           method: "POST",
@@ -66,7 +73,7 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
       }
     })();
     return () => { cancelled = true; };
-  }, [shareOpen, sessionUser, docId, viewLinkUrl, mintingView]);
+  }, [shareOpen, sessionUser, docId]);
 
   async function handleSignOut() {
     // NextAuth's POST /api/auth/signout requires a CSRF token. Same
