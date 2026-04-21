@@ -1,11 +1,14 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import dynamic from "next/dynamic";
+import * as Y from "yjs";
+import { WebsocketProvider } from "y-websocket";
 import NamePrompt from "@/components/NamePrompt";
 import Toolbar from "@/components/Toolbar";
 import DocPreview from "@/components/DocPreview";
 import OutlinePanel from "@/components/OutlinePanel";
+import PageTabs, { type PageMeta } from "@/components/PageTabs";
 
 const Editor = dynamic(() => import("@/components/Editor"), { ssr: false });
 
@@ -34,19 +37,52 @@ interface DocClientProps {
   role?: "viewer" | "commenter" | "editor";
 }
 
+/**
+ * The first page of every document uses the fragment name "blocknote".
+ * This preserves backward compat with single-page docs created before
+ * multi-page landed (their existing content lives in that fragment) and
+ * keeps the server-side SSR preview path (which reads "blocknote") working
+ * unchanged for freshly-created docs.
+ */
+const FIRST_PAGE_ID = "blocknote";
+const DEFAULT_FIRST_PAGE_TITLE = "Page 1";
+
 export default function DocClient({ id, initialBlocks, shareToken, role }: DocClientProps) {
   const readOnly = role === "viewer";
   const [user, setUser] = useState<{ name: string; color: string; image?: string } | null>(null);
   const [checked, setChecked] = useState(false);
   const [sessionUser, setSessionUser] = useState<{ name: string; email: string; image?: string } | null>(null);
+
+  // ── Yjs: single ydoc + provider per document open ───────────────────
+  //
+  // Owning these here (rather than inside <Editor>) means tab switches
+  // remount BlockNote without re-opening the WebSocket. That's the whole
+  // point of multi-page: cheap tab switching, one sync session.
+  const [ydoc] = useState<Y.Doc>(() => new Y.Doc());
+  const [provider, setProvider] = useState<WebsocketProvider | null>(null);
   const [synced, setSynced] = useState(false);
+
+  // ── Pages ──────────────────────────────────────────────────────────
+  const [pages, setPages] = useState<PageMeta[]>([]);
+  const [activePageId, setActivePageIdState] = useState<string>(FIRST_PAGE_ID);
+
+  // Push active page id to the URL hash so deep-links survive reloads and
+  // can be shared internally (e.g. "open the API specs tab directly").
+  const setActivePageId = useCallback((next: string) => {
+    setActivePageIdState(next);
+    if (typeof window !== "undefined") {
+      const newHash = next === FIRST_PAGE_ID ? "" : next;
+      // Avoid pushing duplicate history entries if nothing changed.
+      if (window.location.hash.replace(/^#/, "") !== newHash) {
+        if (newHash) window.history.replaceState(null, "", `#${newHash}`);
+        else window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      }
+    }
+  }, []);
+
   const [editor, setEditor] = useState<unknown>(null);
   const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null);
   const importHtmlRef = useRef<((html: string) => void) | null>(null);
-
-  const handleSynced = useCallback(() => {
-    setSynced(true);
-  }, []);
 
   const handleImportHtml = useCallback((html: string) => {
     importHtmlRef.current?.(html);
@@ -60,6 +96,11 @@ export default function DocClient({ id, initialBlocks, shareToken, role }: DocCl
     setScrollEl(node);
   }, []);
 
+  const registerImportHtml = useCallback((fn: (html: string) => void) => {
+    importHtmlRef.current = fn;
+  }, []);
+
+  // ── Session / name bootstrap (unchanged) ───────────────────────────
   useEffect(() => {
     fetch("/api/auth/session")
       .then((r) => r.json())
@@ -89,84 +130,210 @@ export default function DocClient({ id, initialBlocks, shareToken, role }: DocCl
       });
   }, []);
 
+  // ── Open WebSocket connection once user is resolved ────────────────
+  useEffect(() => {
+    if (!user) return;
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `ws://${window.location.hostname}:1234`;
+    const p = new WebsocketProvider(
+      wsUrl,
+      id,
+      ydoc,
+      shareToken ? { params: { token: shareToken } } : undefined
+    );
+    p.awareness.setLocalStateField("user", { name: user.name, color: user.color });
+
+    if (p.synced) {
+      setSynced(true);
+    } else {
+      p.once("sync", () => setSynced(true));
+    }
+
+    setProvider(p);
+    return () => {
+      p.destroy();
+      setProvider(null);
+      setSynced(false);
+    };
+  }, [id, ydoc, shareToken, user]);
+
+  // ── Subscribe to the pages list in Yjs ─────────────────────────────
+  //
+  // On first sync, if the doc has no pages array yet (legacy doc or brand
+  // new one), seed it with a single "Page 1" entry pointing at the
+  // "blocknote" fragment. This is the only migration needed — existing
+  // content lives in that fragment already, so no data copy.
+  useEffect(() => {
+    if (!synced) return;
+    const order = ydoc.getArray<string>("pageOrder");
+    const titles = ydoc.getMap<string>("pageTitles");
+
+    // Viewer-mode coerces read-only even at CRDT level (ws-server drops
+    // their updates), so we avoid seeding from a viewer session. Editors
+    // opening a fresh doc handle the seeding.
+    if (order.length === 0 && !readOnly) {
+      ydoc.transact(() => {
+        order.push([FIRST_PAGE_ID]);
+        titles.set(FIRST_PAGE_ID, DEFAULT_FIRST_PAGE_TITLE);
+      });
+    }
+
+    const update = () => {
+      // Defensive dedupe: two clients opening a brand-new doc simultaneously
+      // can both seed, resulting in duplicate ids in pageOrder. Rendering
+      // with duplicate React keys breaks, so we collapse them here. The
+      // underlying Yjs state stays slightly dirty — acceptable, as the
+      // race window is microsecond-wide and users don't see duplicates.
+      const ids = order.toArray();
+      const seen = new Set<string>();
+      const list: PageMeta[] = [];
+      for (const pid of ids) {
+        if (seen.has(pid)) continue;
+        seen.add(pid);
+        list.push({ id: pid, title: titles.get(pid) || "Untitled" });
+      }
+      setPages(list);
+    };
+
+    update();
+    order.observe(update);
+    titles.observe(update);
+    return () => {
+      order.unobserve(update);
+      titles.unobserve(update);
+    };
+  }, [synced, ydoc, readOnly]);
+
+  // ── Resolve initial active page from URL hash ──────────────────────
+  useEffect(() => {
+    if (!synced || pages.length === 0) return;
+    const hash = typeof window !== "undefined" ? window.location.hash.replace(/^#/, "") : "";
+    const requested = hash || FIRST_PAGE_ID;
+    const exists = pages.some((p) => p.id === requested);
+    const target = exists ? requested : pages[0]?.id || FIRST_PAGE_ID;
+    if (target !== activePageId) {
+      setActivePageIdState(target);
+    }
+    // Intentionally depends only on synced + pages count, not activePageId —
+    // this effect is a one-shot resolver. Subsequent tab switches go through
+    // setActivePageId().
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [synced, pages.length]);
+
+  // ── React to browser back/forward changing the hash ────────────────
+  useEffect(() => {
+    const onHash = () => {
+      const hash = window.location.hash.replace(/^#/, "");
+      const next = hash || FIRST_PAGE_ID;
+      if (pages.some((p) => p.id === next) && next !== activePageId) {
+        setActivePageIdState(next);
+      }
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, [pages, activePageId]);
+
+  // True once we have everything needed to mount the editor: user is set,
+  // provider is open, we're synced, and we've resolved at least one page.
+  const editorReady = useMemo(
+    () => Boolean(user && provider && synced && pages.length > 0),
+    [user, provider, synced, pages.length]
+  );
+
   if (!checked) return null;
 
   if (!user) {
-    return (
-      <NamePrompt
-        onSubmit={(name, color) => setUser({ name, color })}
-      />
-    );
+    return <NamePrompt onSubmit={(name, color) => setUser({ name, color })} />;
   }
 
   return (
     <div className="flex flex-col h-screen">
       <Toolbar docId={id} sessionUser={sessionUser} onImportHtml={handleImportHtml} readOnly={readOnly} />
+
+      {/* Tab bar. Rendered whenever the editor is ready so users can discover
+          multi-page via the "+" affordance even on single-page docs. Hidden in
+          viewer mode when there's only one page (nothing to switch between). */}
+      {editorReady && (pages.length > 1 || !readOnly) && (
+        <PageTabs
+          ydoc={ydoc}
+          pages={pages}
+          activeId={activePageId}
+          onSwitch={setActivePageId}
+          readOnly={readOnly}
+        />
+      )}
+
       <div className="flex-1 flex overflow-hidden">
         <OutlinePanel
           editor={(synced ? editor : null) as never}
           scrollContainer={scrollEl}
         />
-      <div ref={handleScrollRef} className="flex-1 overflow-y-auto">
-        <div className="max-w-[800px] mx-auto py-8">
-          {/* Show server-rendered preview while Yjs is connecting */}
-          {!synced && initialBlocks.length > 0 && (
-            <div className="pointer-events-none select-none px-4 md:px-[54px]">
-              {initialBlocks.map((block) => {
-                switch (block.type) {
-                  case "heading": {
-                    const level = (block.props?.level as number) || 1;
-                    const sizes: Record<number, string> = {
-                      1: "text-3xl font-bold",
-                      2: "text-2xl font-bold",
-                      3: "text-xl font-bold",
-                    };
-                    return (
-                      <div key={block.id} className={`${sizes[level] || sizes[1]} mb-1 leading-relaxed`}>
-                        {block.text}
-                      </div>
-                    );
+        <div ref={handleScrollRef} className="flex-1 overflow-y-auto">
+          <div className="max-w-[800px] mx-auto py-8">
+            {/* Server-rendered preview while Yjs is connecting. Only relevant
+                for the main page; once synced, the editor takes over. */}
+            {!synced && initialBlocks.length > 0 && (
+              <div className="pointer-events-none select-none px-4 md:px-[54px]">
+                {initialBlocks.map((block) => {
+                  switch (block.type) {
+                    case "heading": {
+                      const level = (block.props?.level as number) || 1;
+                      const sizes: Record<number, string> = {
+                        1: "text-3xl font-bold",
+                        2: "text-2xl font-bold",
+                        3: "text-xl font-bold",
+                      };
+                      return (
+                        <div key={block.id} className={`${sizes[level] || sizes[1]} mb-1 leading-relaxed`}>
+                          {block.text}
+                        </div>
+                      );
+                    }
+                    case "bulletListItem":
+                      return (
+                        <div key={block.id} className="flex gap-2 leading-relaxed">
+                          <span>•</span><span>{block.text}</span>
+                        </div>
+                      );
+                    case "numberedListItem":
+                      return (
+                        <div key={block.id} className="flex gap-2 leading-relaxed">
+                          <span>1.</span><span>{block.text}</span>
+                        </div>
+                      );
+                    default:
+                      return (
+                        <p key={block.id} className="leading-relaxed min-h-[1.5em]">
+                          {block.text || "\u00A0"}
+                        </p>
+                      );
                   }
-                  case "bulletListItem":
-                    return (
-                      <div key={block.id} className="flex gap-2 leading-relaxed">
-                        <span>•</span><span>{block.text}</span>
-                      </div>
-                    );
-                  case "numberedListItem":
-                    return (
-                      <div key={block.id} className="flex gap-2 leading-relaxed">
-                        <span>1.</span><span>{block.text}</span>
-                      </div>
-                    );
-                  default:
-                    return (
-                      <p key={block.id} className="leading-relaxed min-h-[1.5em]">
-                        {block.text || "\u00A0"}
-                      </p>
-                    );
-                }
-              })}
+                })}
+              </div>
+            )}
+            {!synced && initialBlocks.length === 0 && (
+              <DocPreview docId={id} visible={true} />
+            )}
+
+            {/* Editor — keyed by activePageId so tab switches remount BlockNote
+                bound to the new fragment, while the Yjs doc + WS provider stay
+                alive underneath. */}
+            <div style={{ opacity: editorReady ? 1 : 0, position: editorReady ? "static" : "absolute", left: editorReady ? "auto" : "-9999px" }}>
+              {editorReady && provider && (
+                <Editor
+                  key={activePageId}
+                  ydoc={ydoc}
+                  provider={provider}
+                  fragmentName={activePageId}
+                  userName={user.name}
+                  userColor={user.color}
+                  registerImportHtml={registerImportHtml}
+                  registerEditor={handleRegisterEditor}
+                  readOnly={readOnly}
+                />
+              )}
             </div>
-          )}
-          {!synced && initialBlocks.length === 0 && (
-            <DocPreview docId={id} visible={true} />
-          )}
-          {/* Editor — hidden until synced */}
-          <div style={{ opacity: synced ? 1 : 0, position: synced ? "static" : "absolute", left: synced ? "auto" : "-9999px" }}>
-            <Editor
-              docId={id}
-              userName={user.name}
-              userColor={user.color}
-              onSynced={handleSynced}
-              registerImportHtml={(fn) => { importHtmlRef.current = fn; }}
-              registerEditor={handleRegisterEditor}
-              shareToken={shareToken}
-              readOnly={readOnly}
-            />
           </div>
         </div>
-      </div>
       </div>
     </div>
   );

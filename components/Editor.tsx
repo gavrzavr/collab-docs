@@ -8,25 +8,25 @@ import type { BlockTypeSelectItem } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
 import { RiText, RiH1, RiH2, RiH3, RiListUnordered, RiListOrdered, RiListCheck3, RiQuoteText } from "react-icons/ri";
 import * as Y from "yjs";
-import { WebsocketProvider } from "y-websocket";
-import { useEffect, useRef, useState } from "react";
+import type { WebsocketProvider } from "y-websocket";
+import { useEffect, useMemo } from "react";
 
 interface EditorProps {
-  docId: string;
+  /** The shared Y.Doc for this document. Owned by the parent (DocClient) so
+   *  that tab switches don't tear down the WebSocket connection. */
+  ydoc: Y.Doc;
+  /** The y-websocket provider, also owned by the parent. */
+  provider: WebsocketProvider;
+  /** The Yjs XmlFragment name this editor binds to.
+   *  For multi-page docs each page gets its own fragment; the first page
+   *  historically uses "blocknote" for backward compat with legacy docs. */
+  fragmentName: string;
   userName: string;
   userColor: string;
-  onSynced?: () => void;
   registerImportHtml?: (fn: (html: string) => void) => void;
   registerEditor?: (editor: unknown) => void;
-  /**
-   * Share token to pass to the ws-server on the WS URL. Required when
-   * connecting as a viewer/commenter; absent for the owner/editor path.
-   */
-  shareToken?: string;
-  /**
-   * Disable edits in the UI. This is security-by-UI only — the ws-server
-   * also enforces read-only on viewer tokens (drops their sync updates).
-   */
+  /** Disable edits in the UI. The ws-server enforces this server-side too
+   *  (viewer tokens have their sync updates dropped). */
   readOnly?: boolean;
 }
 
@@ -77,65 +77,23 @@ function CollabBlockTypeSelect() {
   return <Components.FormattingToolbar.Select className="bn-select" items={selectItems} />;
 }
 
-export default function Editor({ docId, userName, userColor, onSynced, registerImportHtml, registerEditor, shareToken, readOnly }: EditorProps) {
-  const [ready, setReady] = useState(false);
-  const ydocRef = useRef<Y.Doc | null>(null);
-  const providerRef = useRef<WebsocketProvider | null>(null);
-  const fragmentRef = useRef<Y.XmlFragment | null>(null);
+export default function Editor({ ydoc, provider, fragmentName, userName, userColor, registerImportHtml, registerEditor, readOnly }: EditorProps) {
+  // Resolve the fragment from the shared ydoc. Memoized on fragmentName so
+  // useCreateBlockNote gets a stable reference per page — when fragmentName
+  // changes (tab switch), the parent should remount us via a React key, which
+  // gives us a fresh BlockNote instance bound to the new fragment.
+  const fragment = useMemo(() => ydoc.getXmlFragment(fragmentName), [ydoc, fragmentName]);
 
-  if (!ydocRef.current) {
-    ydocRef.current = new Y.Doc();
-    fragmentRef.current = ydocRef.current.getXmlFragment("blocknote");
-  }
-
-  useEffect(() => {
-    const ydoc = ydocRef.current!;
-    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `ws://${window.location.hostname}:1234`;
-    const provider = new WebsocketProvider(
-      wsUrl,
-      docId,
-      ydoc,
-      shareToken ? { params: { token: shareToken } } : undefined
-    );
-    providerRef.current = provider;
-
-    provider.awareness.setLocalStateField("user", {
-      name: userName,
-      color: userColor,
-    });
-
-    // Notify parent when Yjs is synced
-    if (provider.synced) {
-      onSynced?.();
-    } else {
-      provider.once("sync", () => {
-        onSynced?.();
-      });
-    }
-
-    setReady(true);
-
-    return () => {
-      provider.destroy();
-      providerRef.current = null;
-    };
-  }, [docId, userName, userColor, onSynced, shareToken]);
-
-  const editor = useCreateBlockNote(
-    {
-      collaboration: providerRef.current
-        ? {
-            provider: providerRef.current,
-            fragment: fragmentRef.current!,
-            user: {
-              name: userName,
-              color: userColor,
-            },
-          }
-        : undefined,
+  const editor = useCreateBlockNote({
+    collaboration: {
+      provider,
+      fragment,
+      user: {
+        name: userName,
+        color: userColor,
+      },
     },
-    [ready]
-  );
+  });
 
   // Expose editor instance to parent (for outline panel, etc.)
   useEffect(() => {
@@ -158,10 +116,6 @@ export default function Editor({ docId, userName, userColor, onSynced, registerI
       }
     });
   }, [editor, registerImportHtml]);
-
-  if (!ready || !providerRef.current) {
-    return null;
-  }
 
   return (
     <BlockNoteView editor={editor} theme="light" formattingToolbar={false} editable={!readOnly}>

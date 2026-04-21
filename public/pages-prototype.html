@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PostPaper — Pages (tabs) prototype</title>
+<style>
+  :root {
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: #e5e7eb;
+    --gray-300: #d1d5db;
+    --gray-400: #9ca3af;
+    --gray-500: #6b7280;
+    --gray-600: #4b5563;
+    --gray-700: #374151;
+    --gray-800: #1f2937;
+    --gray-900: #111827;
+    --brand: #0BA70B;
+    --accent: #4F46E5;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    color: var(--gray-900);
+    background: #fff;
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Top toolbar — mirrors components/Toolbar.tsx */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--gray-200);
+    background: #fff;
+  }
+  .toolbar .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-right: auto;
+    font-weight: 600;
+    color: var(--gray-700);
+    font-size: 14px;
+    text-decoration: none;
+  }
+  .toolbar .logo-icon {
+    width: 16px; height: 16px;
+    background: var(--brand);
+    border-radius: 2px;
+  }
+  .toolbar button {
+    border: 1px solid var(--gray-200);
+    background: var(--gray-100);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--gray-700);
+    cursor: pointer;
+  }
+  .toolbar button:hover { background: var(--gray-200); }
+  .toolbar button.primary {
+    background: #000; color: #fff; border-color: #000;
+  }
+  .toolbar .avatar {
+    width: 28px; height: 28px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #4ECDC4, #45B7D1);
+    margin-left: 8px;
+  }
+
+  /* ── Tab bar ─────────────────────────────────────────── */
+  .tabbar {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--gray-200);
+    background: var(--gray-50);
+    overflow-x: auto;
+    scrollbar-width: thin;
+    user-select: none;
+  }
+  .tab {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 14px 10px 14px;
+    font-size: 13px;
+    color: var(--gray-600);
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    cursor: pointer;
+    margin-bottom: -1px;
+    white-space: nowrap;
+    min-height: 36px;
+  }
+  .tab:hover { color: var(--gray-800); background: var(--gray-100); }
+  .tab.active {
+    background: #fff;
+    color: var(--gray-900);
+    border-color: var(--gray-200);
+    font-weight: 500;
+  }
+  .tab.dragging { opacity: 0.4; }
+  .tab.drop-before { box-shadow: -2px 0 0 var(--accent); }
+  .tab.drop-after  { box-shadow:  2px 0 0 var(--accent); }
+  .tab .title { pointer-events: none; }
+  .tab .title[contenteditable="true"] {
+    pointer-events: auto;
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+    background: #fff;
+    padding: 0 2px;
+    border-radius: 2px;
+  }
+  .tab .close {
+    display: none;
+    width: 16px; height: 16px;
+    border-radius: 4px;
+    color: var(--gray-500);
+    line-height: 14px;
+    text-align: center;
+    font-size: 12px;
+  }
+  .tab:hover .close,
+  .tab.active .close { display: inline-block; }
+  .tab .close:hover { background: var(--gray-300); color: var(--gray-900); }
+  .tab-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    color: var(--gray-500);
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    border-radius: 4px;
+    margin: 4px 0;
+  }
+  .tab-add:hover { background: var(--gray-200); color: var(--gray-900); }
+
+  /* Right-click menu */
+  .tab-menu {
+    position: fixed;
+    z-index: 1000;
+    background: #fff;
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+    padding: 4px;
+    min-width: 160px;
+    display: none;
+  }
+  .tab-menu.open { display: block; }
+  .tab-menu .item {
+    padding: 7px 10px;
+    font-size: 13px;
+    color: var(--gray-800);
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .tab-menu .item:hover { background: var(--gray-100); }
+  .tab-menu .item.danger { color: #dc2626; }
+  .tab-menu .item.danger:hover { background: #fee2e2; }
+  .tab-menu .sep {
+    height: 1px;
+    background: var(--gray-200);
+    margin: 4px 2px;
+  }
+
+  /* ── Layout ─────────────────────────────────────────── */
+  .layout {
+    display: flex;
+    height: calc(100vh - 53px - 49px);
+  }
+  .outline {
+    width: 240px;
+    border-right: 1px solid var(--gray-200);
+    padding: 20px 12px;
+    overflow-y: auto;
+    flex-shrink: 0;
+    background: #fff;
+  }
+  .outline-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--gray-500);
+    font-weight: 600;
+    padding: 0 10px 8px 10px;
+  }
+  .outline-item {
+    display: block;
+    padding: 5px 10px;
+    border-radius: 4px;
+    color: var(--gray-700);
+    font-size: 13px;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .outline-item:hover { background: var(--gray-100); }
+  .outline-item.level-2 { padding-left: 22px; color: var(--gray-600); }
+  .outline-item.level-3 { padding-left: 34px; color: var(--gray-500); }
+  .outline-item.active { background: var(--gray-200); color: var(--gray-900); font-weight: 500; }
+
+  .editor {
+    flex: 1;
+    overflow-y: auto;
+    padding: 50px 80px;
+  }
+  .editor-inner {
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  .editor h1 { font-size: 32px; font-weight: 700; margin: 0 0 10px; line-height: 1.2; }
+  .editor h2 { font-size: 22px; font-weight: 700; margin: 28px 0 8px; line-height: 1.3; }
+  .editor h3 { font-size: 17px; font-weight: 700; margin: 20px 0 6px; line-height: 1.4; }
+  .editor p  { margin: 0 0 10px; color: var(--gray-800); }
+  .editor ul, .editor ol { margin: 0 0 12px; padding-left: 22px; color: var(--gray-800); }
+  .editor li { margin-bottom: 2px; }
+  .editor code {
+    background: var(--gray-100);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.88em;
+  }
+  .editor pre {
+    background: var(--gray-100);
+    padding: 14px 16px;
+    border-radius: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+    overflow-x: auto;
+  }
+  .page-meta {
+    font-size: 12px;
+    color: var(--gray-500);
+    border-bottom: 1px solid var(--gray-100);
+    padding-bottom: 10px;
+    margin-bottom: 18px;
+  }
+
+  .hint {
+    position: fixed;
+    bottom: 16px; right: 16px;
+    font-size: 12px;
+    color: var(--gray-500);
+    background: var(--gray-50);
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    padding: 8px 12px;
+    max-width: 320px;
+    line-height: 1.45;
+  }
+  .hint b { color: var(--gray-700); }
+</style>
+</head>
+<body>
+
+<!-- Toolbar -->
+<div class="toolbar">
+  <a class="logo" href="#">
+    <div class="logo-icon"></div>
+    <span>PostPaper</span>
+  </a>
+  <button>Share</button>
+  <button>Import</button>
+  <button>History</button>
+  <button>Connect AI</button>
+  <button class="primary">Export ▾</button>
+  <div class="avatar"></div>
+</div>
+
+<!-- Tab bar -->
+<div class="tabbar" id="tabbar">
+  <!-- tabs injected by JS -->
+</div>
+
+<!-- Layout -->
+<div class="layout">
+  <aside class="outline">
+    <div class="outline-label">On this page</div>
+    <div id="outline"></div>
+  </aside>
+  <main class="editor">
+    <div class="editor-inner" id="editor">
+      <!-- page content injected -->
+    </div>
+  </main>
+</div>
+
+<!-- Context menu -->
+<div class="tab-menu" id="tabmenu">
+  <div class="item" data-action="rename">Rename</div>
+  <div class="item" data-action="duplicate">Duplicate</div>
+  <div class="sep"></div>
+  <div class="item danger" data-action="delete">Delete</div>
+</div>
+
+<div class="hint">
+  <b>Prototype controls:</b><br>
+  Click a tab to switch. Double-click to rename. Right-click for menu. Drag tabs to reorder. Press <b>+</b> to add a new page.
+</div>
+
+<script>
+// ────────────────────────────────────────────────────────
+// State — mimics ydoc.getArray("pages") + XmlFragments per page.
+// In real implementation the "blocks" array lives as a Yjs
+// XmlFragment named "page:{id}"; the title & order live in a
+// shared Y.Array so they sync across collaborators.
+// ────────────────────────────────────────────────────────
+const pages = [
+  {
+    id: "p1",
+    title: "Overview",
+    blocks: [
+      { type: "h1", text: "PostPaper — Overview" },
+      { type: "meta", text: "Last edited: 2026-04-21 • 3 collaborators" },
+      { type: "p", text: "PostPaper is a collaborative block editor where humans and AI agents work on the same document in real time via Yjs CRDT." },
+      { type: "h2", text: "Positioning" },
+      { type: "p", text: "One document, two kinds of participants. No copy-paste between chat and doc." },
+      { type: "h2", text: "Who it's for" },
+      { type: "ul", items: [
+        "Teams that already work with Claude / GPT and are tired of copy-pasting.",
+        "Teams that want collaboration and AI-agent in the same tool.",
+        "Developers building AI pipelines over text artifacts (RFCs, notes, research)."
+      ]},
+      { type: "h2", text: "Status" },
+      { type: "p", text: "MVP is live at https://postpaper.co — multi-user, MCP-enabled, with share-tokens and viewer roles." }
+    ]
+  },
+  {
+    id: "p2",
+    title: "API specs",
+    blocks: [
+      { type: "h1", text: "REST & MCP surface" },
+      { type: "meta", text: "Last edited: 2026-04-20" },
+      { type: "h2", text: "REST" },
+      { type: "p", text: "Public surface under /api/v1/docs:" },
+      { type: "ul", items: [
+        "GET  /api/v1/docs — list docs for current user",
+        "POST /api/v1/docs — create new doc, returns { id }",
+        "GET  /api/v1/docs/:id/text — plain-text dump",
+        "GET  /api/v1/docs/:id/append?text=… — append markdown blocks",
+        "GET  /api/v1/docs/:id/export?format=docx|md — download"
+      ]},
+      { type: "h2", text: "MCP tools" },
+      { type: "ul", items: [
+        "read_document — returns blocks with IDs",
+        "edit_document — append or replace from markdown",
+        "update_block — surgical edit of one block by ID",
+        "insert_block — add a block after a given ID",
+        "delete_block — remove one block",
+        "create_table — 2D array → table block"
+      ]},
+      { type: "h3", text: "Example" },
+      { type: "pre", text: "POST https://ws.postpaper.co/mcp\nContent-Type: application/json\n\n{ \"jsonrpc\":\"2.0\", \"method\":\"tools/call\", \"params\":{ \"name\":\"read_document\", … } }" }
+    ]
+  },
+  {
+    id: "p3",
+    title: "Changelog",
+    blocks: [
+      { type: "h1", text: "Changelog" },
+      { type: "meta", text: "Last edited: just now" },
+      { type: "h2", text: "2026-04-21" },
+      { type: "ul", items: [
+        "Harden create_table against ragged row arrays (fixes laggy analytics doc).",
+        "Updated analytics dashboard: 18 users, 25 docs, 50 AI calls."
+      ]},
+      { type: "h2", text: "2026-04-20" },
+      { type: "ul", items: [
+        "Share-tokens: view-only links via /v/:token.",
+        "Owner auto-redirect from own view-link to /doc/:id.",
+        "Import button hidden in read-only viewer mode.",
+        "Fixed Share dropdown useEffect cascade (stuck \"Creating…\")."
+      ]},
+      { type: "h2", text: "Earlier" },
+      { type: "ul", items: [
+        "Google SSO via NextAuth v5 + per-user dashboard.",
+        "HTTP MCP endpoint on ws.postpaper.co/mcp (stateless).",
+        "Outline panel with smooth scroll + active-heading highlight.",
+        "Initial BlockNote + Yjs integration."
+      ]}
+    ]
+  }
+];
+
+let activeId = pages[0].id;
+let dragId   = null;
+
+const tabbar  = document.getElementById("tabbar");
+const editor  = document.getElementById("editor");
+const outline = document.getElementById("outline");
+const menu    = document.getElementById("tabmenu");
+let menuTargetId = null;
+
+// ── Render ──────────────────────────────────────────────
+function renderTabs() {
+  tabbar.innerHTML = "";
+  for (const p of pages) {
+    const t = document.createElement("div");
+    t.className = "tab" + (p.id === activeId ? " active" : "");
+    t.dataset.id = p.id;
+    t.draggable  = true;
+    t.innerHTML = `<span class="title">${escapeHtml(p.title)}</span>` +
+                  `<span class="close" title="Close">×</span>`;
+    tabbar.appendChild(t);
+  }
+  const add = document.createElement("div");
+  add.className = "tab-add";
+  add.textContent = "+";
+  add.title = "Add page";
+  add.addEventListener("click", addPage);
+  tabbar.appendChild(add);
+}
+
+function renderPage() {
+  const p = pages.find(x => x.id === activeId);
+  if (!p) { editor.innerHTML = ""; outline.innerHTML = ""; return; }
+
+  let html = "";
+  const headings = [];
+  for (const b of p.blocks) {
+    switch (b.type) {
+      case "h1": html += `<h1 id="${slug(b.text)}">${escapeHtml(b.text)}</h1>`;
+                 headings.push({ level: 1, text: b.text, id: slug(b.text) }); break;
+      case "h2": html += `<h2 id="${slug(b.text)}">${escapeHtml(b.text)}</h2>`;
+                 headings.push({ level: 2, text: b.text, id: slug(b.text) }); break;
+      case "h3": html += `<h3 id="${slug(b.text)}">${escapeHtml(b.text)}</h3>`;
+                 headings.push({ level: 3, text: b.text, id: slug(b.text) }); break;
+      case "p":  html += `<p>${escapeHtml(b.text)}</p>`; break;
+      case "meta": html += `<div class="page-meta">${escapeHtml(b.text)}</div>`; break;
+      case "ul": html += `<ul>${b.items.map(i => `<li>${escapeHtml(i)}</li>`).join("")}</ul>`; break;
+      case "pre": html += `<pre>${escapeHtml(b.text)}</pre>`; break;
+    }
+  }
+  editor.innerHTML = html;
+
+  outline.innerHTML = headings.map(h =>
+    `<a class="outline-item level-${h.level}" href="#${h.id}">${escapeHtml(h.text)}</a>`
+  ).join("");
+}
+
+function render() { renderTabs(); renderPage(); }
+
+// ── Interactions ────────────────────────────────────────
+tabbar.addEventListener("click", (e) => {
+  const tab   = e.target.closest(".tab");
+  if (!tab) return;
+  const id    = tab.dataset.id;
+  if (e.target.classList.contains("close")) {
+    deletePage(id);
+    return;
+  }
+  activeId = id;
+  render();
+});
+
+tabbar.addEventListener("dblclick", (e) => {
+  const tab = e.target.closest(".tab");
+  if (!tab) return;
+  beginRename(tab);
+});
+
+tabbar.addEventListener("contextmenu", (e) => {
+  const tab = e.target.closest(".tab");
+  if (!tab) return;
+  e.preventDefault();
+  menuTargetId = tab.dataset.id;
+  menu.style.left = `${e.clientX}px`;
+  menu.style.top  = `${e.clientY}px`;
+  menu.classList.add("open");
+});
+document.addEventListener("click", (e) => {
+  if (!menu.contains(e.target)) menu.classList.remove("open");
+});
+menu.addEventListener("click", (e) => {
+  const action = e.target.dataset.action;
+  if (!action || !menuTargetId) return;
+  if (action === "rename") {
+    const tab = tabbar.querySelector(`.tab[data-id="${menuTargetId}"]`);
+    if (tab) beginRename(tab);
+  } else if (action === "duplicate") {
+    duplicatePage(menuTargetId);
+  } else if (action === "delete") {
+    deletePage(menuTargetId);
+  }
+  menu.classList.remove("open");
+});
+
+// Drag & drop reorder
+tabbar.addEventListener("dragstart", (e) => {
+  const tab = e.target.closest(".tab");
+  if (!tab) return;
+  dragId = tab.dataset.id;
+  tab.classList.add("dragging");
+  e.dataTransfer.effectAllowed = "move";
+});
+tabbar.addEventListener("dragend", (e) => {
+  const tab = e.target.closest(".tab");
+  if (tab) tab.classList.remove("dragging");
+  tabbar.querySelectorAll(".tab").forEach(t => t.classList.remove("drop-before", "drop-after"));
+  dragId = null;
+});
+tabbar.addEventListener("dragover", (e) => {
+  const tab = e.target.closest(".tab");
+  if (!tab || tab.dataset.id === dragId) return;
+  e.preventDefault();
+  tabbar.querySelectorAll(".tab").forEach(t => t.classList.remove("drop-before", "drop-after"));
+  const rect = tab.getBoundingClientRect();
+  const before = e.clientX < rect.left + rect.width / 2;
+  tab.classList.add(before ? "drop-before" : "drop-after");
+});
+tabbar.addEventListener("drop", (e) => {
+  const tab = e.target.closest(".tab");
+  if (!tab || tab.dataset.id === dragId) return;
+  e.preventDefault();
+  const rect = tab.getBoundingClientRect();
+  const before = e.clientX < rect.left + rect.width / 2;
+  const fromIdx = pages.findIndex(p => p.id === dragId);
+  const toIdx   = pages.findIndex(p => p.id === tab.dataset.id);
+  const [moved] = pages.splice(fromIdx, 1);
+  const insertAt = toIdx + (before ? 0 : 1) - (fromIdx < toIdx ? 1 : 0);
+  pages.splice(insertAt, 0, moved);
+  render();
+});
+
+// ── Mutations ───────────────────────────────────────────
+function addPage() {
+  const n = pages.length + 1;
+  const p = {
+    id: "p" + Math.random().toString(36).slice(2, 8),
+    title: "Page " + n,
+    blocks: [
+      { type: "h1", text: "Untitled page" },
+      { type: "p",  text: "Start typing to fill this page. Use / for block menu." }
+    ]
+  };
+  pages.push(p);
+  activeId = p.id;
+  render();
+}
+
+function duplicatePage(id) {
+  const i = pages.findIndex(p => p.id === id);
+  if (i < 0) return;
+  const src = pages[i];
+  const copy = {
+    id: "p" + Math.random().toString(36).slice(2, 8),
+    title: src.title + " (copy)",
+    blocks: JSON.parse(JSON.stringify(src.blocks))
+  };
+  pages.splice(i + 1, 0, copy);
+  activeId = copy.id;
+  render();
+}
+
+function deletePage(id) {
+  if (pages.length === 1) {
+    alert("Can't delete the last page — a document must have at least one.");
+    return;
+  }
+  if (!confirm("Delete this page? This cannot be undone.")) return;
+  const i = pages.findIndex(p => p.id === id);
+  pages.splice(i, 1);
+  if (activeId === id) activeId = pages[Math.max(0, i - 1)].id;
+  render();
+}
+
+function beginRename(tab) {
+  const title = tab.querySelector(".title");
+  const id = tab.dataset.id;
+  title.setAttribute("contenteditable", "true");
+  title.focus();
+  // Select all text
+  const range = document.createRange();
+  range.selectNodeContents(title);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  const commit = () => {
+    title.removeAttribute("contenteditable");
+    const newTitle = title.textContent.trim() || "Untitled";
+    const p = pages.find(p => p.id === id);
+    if (p) p.title = newTitle;
+    title.textContent = newTitle;
+  };
+
+  title.addEventListener("blur", commit, { once: true });
+  title.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); title.blur(); }
+    if (e.key === "Escape") { title.textContent = pages.find(p => p.id === id)?.title || "Untitled"; title.blur(); }
+  });
+}
+
+// ── Helpers ─────────────────────────────────────────────
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function slug(s) {
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+// ── Boot ────────────────────────────────────────────────
+render();
+</script>
+</body>
+</html>
