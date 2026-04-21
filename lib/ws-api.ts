@@ -143,7 +143,7 @@ export async function listShareTokens(
 /** Public resolve — used by /v/[token] to discover the doc id. */
 export async function resolveShareToken(
   token: string
-): Promise<{ docId: string; role: ShareRole } | null> {
+): Promise<{ docId: string; role: ShareRole; ownerId: string | null } | null> {
   const res = await fetch(`${WS_API_URL}/api/share-tokens/${encodeURIComponent(token)}`, {
     cache: "no-store",
   });

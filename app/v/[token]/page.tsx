@@ -1,5 +1,6 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import type { Metadata } from "next";
+import { auth } from "@/auth";
 import { withYDoc, readBlocks } from "@/lib/yjs-api-bridge";
 import { resolveShareToken } from "@/lib/ws-api";
 import DocClient from "@/app/doc/[id]/DocClient";
@@ -30,6 +31,16 @@ export default async function ViewerPage({
   const resolved = await resolveShareToken(token).catch(() => null);
   if (!resolved) {
     notFound();
+  }
+
+  // If the signed-in user owns this doc, redirect them to the full
+  // editor route. Permissions should follow identity, not URL — an
+  // owner shouldn't be locked out of their own doc just because they
+  // clicked the view-link they sent to someone else.
+  const session = await auth();
+  const email = session?.user?.email;
+  if (email && resolved.ownerId && email === resolved.ownerId) {
+    redirect(`/doc/${resolved.docId}`);
   }
 
   // Fetch initial content for the server-rendered preview.

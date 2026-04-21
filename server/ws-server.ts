@@ -1518,8 +1518,9 @@ const httpServer = http.createServer(async (req, res) => {
   }
 
   // GET /api/share-tokens/:token — resolve token (public: callers need
-  // this to route /v/:token → /doc/:id). Only returns the docId+role,
-  // never anything sensitive about the doc itself.
+  // this to route /v/:token → /doc/:id). Returns docId+role plus the
+  // doc's ownerId so the Next.js layer can redirect an owner landing on
+  // their own view-link into full edit mode.
   if (req.method === "GET" && shareTokenDeleteMatch) {
     const token = shareTokenDeleteMatch[1];
     const row = getShareTokenStmt.get(token) as
@@ -1529,7 +1530,14 @@ const httpServer = http.createServer(async (req, res) => {
       sendJson(res, 404, { error: "token not found" });
       return;
     }
-    sendJson(res, 200, { docId: row.doc_id, role: row.role });
+    const ownerRow = getDocOwnerStmt.get(row.doc_id) as
+      | { owner_id: string | null }
+      | undefined;
+    sendJson(res, 200, {
+      docId: row.doc_id,
+      role: row.role,
+      ownerId: ownerRow?.owner_id ?? null,
+    });
     return;
   }
 
