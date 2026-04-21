@@ -1090,12 +1090,14 @@ function createMcpServer(): McpServer {
     "read_document",
     "Read one page of a PostPaper document. This is a live, multi-user, block-based editor: each block has a stable ID and is an independent unit of meaning. ALWAYS call this before editing — returns blocks with IDs so you can make surgical edits via update_block / insert_block / delete_block (preferred) instead of rewriting. A document can have multiple pages (Excel-style tabs) — without a page argument you get the first one. Use list_pages to discover other pages; pass their id or title via 'page' to read a specific tab. Core mindset: think in blocks, not pages; one idea per block; headings are navigation, not decoration; preserve collaborators' work — do not touch blocks unrelated to the task.",
     {
-      doc_url: z.string().describe("Document URL (e.g. https://postpaper.co/doc/ABC123) or just the document ID"),
+      doc_url: z.string().describe("Document URL — either /doc/:id (canonical, editor access) or /v/:token (view-only share link, read-only). You can also pass the bare ID for a /doc/:id URL."),
       page: z.string().optional().describe("Optional page ID or title. Omit to read the first page. Call list_pages to see all pages."),
     },
     async ({ doc_url, page }) => {
-      const docId = extractDocIdFromUrl(doc_url);
-      logEvent("mcp.read_document", docId, { page: page ?? null });
+      let ctx: DocUrlContext;
+      try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const { docId, viaShareToken, role } = ctx;
+      logEvent("mcp.read_document", docId, { page: page ?? null, via: viaShareToken ? "share" : "doc" });
       try {
         const entry = getOrCreateDoc(docId);
         const resolved = resolvePageForMcp(entry.ydoc, page);
@@ -1108,11 +1110,21 @@ function createMcpServer(): McpServer {
           ? `\nPages in this document (${pages.length}): ${pages.map(p => `"${p.title}"`).join(", ")}. Currently reading: "${targetPage.title}".`
           : "";
 
+        // When the caller opened via /v/:token, surface the access mode so Claude
+        // knows what write operations will work. Viewer links are read-only on the
+        // wire (ws-server drops their sync updates), so writes through MCP would
+        // also be blocked below — we tell the model up front to avoid wasted calls.
+        const accessNote = viaShareToken
+          ? (role === "viewer"
+              ? `\n\n[ACCESS: view-only share link] You can read this document but CANNOT edit it. Do not attempt update_block / insert_block / delete_block / edit_document / create_table / create_page / rename_page — they will be rejected. If the user asks for edits, tell them to share the canonical /doc/:id URL (not /v/:token) or to issue an editor share link.`
+              : `\n\n[ACCESS: ${role} share link] You opened this document via a share token granting ${role} access.`)
+          : "";
+
         if (blocks.length === 0) {
           return {
             content: [{
               type: "text" as const,
-              text: `Page "${targetPage.title}" in document (ID: ${docId}) is empty. Use edit_document with page="${targetPage.title}" to add content.${pageSummary}`,
+              text: `Page "${targetPage.title}" in document (ID: ${docId}) is empty.${role === "viewer" ? "" : ` Use edit_document with page="${targetPage.title}" to add content.`}${pageSummary}${accessNote}`,
             }],
           };
         }
@@ -1128,7 +1140,7 @@ function createMcpServer(): McpServer {
         return {
           content: [{
             type: "text" as const,
-            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}) — page "${targetPage.title}" (${blocks.length} blocks):\n\n${lines.join("\n")}${pageSummary}\n\n--- HOW TO EDIT ---\nThink in blocks, not pages within a page. Each line above is one addressable block with a stable ID.\n- Change one block: update_block(block_id, text)\n- Add between blocks: insert_block(after_block_id, text)\n- Remove a block: delete_block(block_id)\n- Append at the end: edit_document(mode="append")\n- Tables: create_table(rows)\nAll write tools accept an optional "page" argument — pass the same page id or title you used here to keep edits on this tab. NEVER use edit_document(mode="replace") unless the user explicitly asks to rewrite.\n\nMULTIPLE PAGES: Use pages (tabs) to separate genuinely distinct sections — e.g. "API reference", "Changelog", "Roadmap" — when each would otherwise be a very long document section. Do NOT split a single flowing narrative across pages. Create a new page with create_page, then target it with edit_document(page=...).\n\nPRESERVE COLLABORATORS' WORK: do not touch blocks unrelated to the task, even if you think they could be improved. One logical change per operation.\n\nFORMATTING: most blocks should be paragraphs (no prefix). Use "- " only for 3+ short parallel items; headings only for section titles; bold only on key terms. Inline: **bold**, *italic*, \`code\`, ~~strike~~, __underline__, [text](url).\n\nCOLORS: supported via text_color / background_color on update_block and insert_block. Palette: default, gray, brown, red, orange, yellow, green, blue, purple, pink. Use at most 1–2 accent colors per document, with consistent semantics (red=warning, green=success, blue=info, yellow bg=highlight).`,
+            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}) — page "${targetPage.title}" (${blocks.length} blocks):\n\n${lines.join("\n")}${pageSummary}${accessNote}\n\n--- HOW TO EDIT ---\nThink in blocks, not pages within a page. Each line above is one addressable block with a stable ID.\n- Change one block: update_block(block_id, text)\n- Add between blocks: insert_block(after_block_id, text)\n- Remove a block: delete_block(block_id)\n- Append at the end: edit_document(mode="append")\n- Tables: create_table(rows)\nAll write tools accept an optional "page" argument — pass the same page id or title you used here to keep edits on this tab. NEVER use edit_document(mode="replace") unless the user explicitly asks to rewrite.\n\nMULTIPLE PAGES: Use pages (tabs) to separate genuinely distinct sections — e.g. "API reference", "Changelog", "Roadmap" — when each would otherwise be a very long document section. Do NOT split a single flowing narrative across pages. Create a new page with create_page, then target it with edit_document(page=...).\n\nPRESERVE COLLABORATORS' WORK: do not touch blocks unrelated to the task, even if you think they could be improved. One logical change per operation.\n\nFORMATTING: most blocks should be paragraphs (no prefix). Use "- " only for 3+ short parallel items; headings only for section titles; bold only on key terms. Inline: **bold**, *italic*, \`code\`, ~~strike~~, __underline__, [text](url).\n\nCOLORS: supported via text_color / background_color on update_block and insert_block. Palette: default, gray, brown, red, orange, yellow, green, blue, purple, pink. Use at most 1–2 accent colors per document, with consistent semantics (red=warning, green=success, blue=info, yellow bg=highlight).`,
           }],
         };
       } catch (e) {
@@ -1141,13 +1153,17 @@ function createMcpServer(): McpServer {
     "edit_document",
     "Append (or replace) markdown content on ONE page of a PostPaper document. Each line becomes one block; prefix sets type — no prefix = paragraph, # = heading, - = bullet, 1. = numbered, - [ ] = task. Inline: **bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url). For targeted edits ALWAYS prefer update_block / insert_block / delete_block — they preserve block IDs and don't disturb other collaborators. mode='replace' is a last resort; never use it unless the user explicitly asks to rewrite the whole page. For tables use create_table. For colors, write content first, then update_block with text_color/background_color. Pass 'page' to target a specific tab — omit to write to the first page. If the content would make the page very long and splits naturally into distinct topics, consider create_page + edit_document to put the new section on its own tab instead.",
     {
-      doc_url: z.string().describe("Document URL or ID"),
+      doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
       content: z.string().describe("Markdown text. NO prefix = paragraph. # = heading. - = bullet. 1. = numbered. - [ ] = checklist. **bold** *italic* `code` [text](url)"),
       mode: z.enum(["append", "replace"]).default("append").describe("'append' adds to end (default). ONLY use 'replace' when user explicitly asks to rewrite the whole page."),
       page: z.string().optional().describe("Optional page ID or title. Omit to write to the first page. Call list_pages to see available pages or create_page to add a new one."),
     },
     async ({ doc_url, content, mode, page }) => {
-      const docId = extractDocIdFromUrl(doc_url);
+      let ctx: DocUrlContext;
+      try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const viewerErr = requireEditor(ctx);
+      if (viewerErr) return viewerErr;
+      const { docId } = ctx;
       logEvent("mcp.edit_document", docId, { mode, chars: content.length, page: page ?? null });
       try {
         const entry = getOrCreateDoc(docId);
@@ -1176,7 +1192,7 @@ function createMcpServer(): McpServer {
     "update_block",
     "Edit ONE block by ID — the preferred tool for targeted changes. Preserves the block's identity (other editors' cursors and references stay valid) and leaves unrelated blocks untouched. Use read_document first to get IDs. For multiple changes, call update_block multiple times rather than rewriting via edit_document. Supports inline formatting (**bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url)), text/background color, alignment, type change, and heading level. Multi-page docs: pass the same 'page' argument you used with read_document — block IDs are scoped to one page.",
     {
-      doc_url: z.string().describe("Document URL or ID"),
+      doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
       block_id: z.string().describe("The block ID to update (from read_document output, shown in [brackets])"),
       text: z.string().describe("New text. Supports: **bold**, *italic*, ~~strike~~, `code`, __underline__, [text](url)"),
       block_type: z.string().optional().describe("Block type: paragraph, heading, bulletListItem, numberedListItem, checkListItem"),
@@ -1187,7 +1203,11 @@ function createMcpServer(): McpServer {
       page: z.string().optional().describe("Optional page ID or title the block lives on. Omit to target the first page."),
     },
     async ({ doc_url, block_id, text, block_type, level, text_color, background_color, text_alignment, page }) => {
-      const docId = extractDocIdFromUrl(doc_url);
+      let ctx: DocUrlContext;
+      try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const viewerErr = requireEditor(ctx);
+      if (viewerErr) return viewerErr;
+      const { docId } = ctx;
       logEvent("mcp.update_block", docId, { block_id, page: page ?? null });
       try {
         const entry = getOrCreateDoc(docId);
@@ -1226,12 +1246,16 @@ function createMcpServer(): McpServer {
     "delete_block",
     "Delete ONE block by ID. Only delete blocks that are clearly part of the requested change — other humans and agents may be editing in parallel, so do not delete blocks you did not author unless the user explicitly asks. Use read_document first to get IDs. Multi-page docs: pass the same 'page' argument you used with read_document.",
     {
-      doc_url: z.string().describe("Document URL or ID"),
+      doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
       block_id: z.string().describe("The block ID to delete"),
       page: z.string().optional().describe("Optional page ID or title the block lives on. Omit to target the first page."),
     },
     async ({ doc_url, block_id, page }) => {
-      const docId = extractDocIdFromUrl(doc_url);
+      let ctx: DocUrlContext;
+      try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const viewerErr = requireEditor(ctx);
+      if (viewerErr) return viewerErr;
+      const { docId } = ctx;
       logEvent("mcp.delete_block", docId, { block_id, page: page ?? null });
       try {
         const entry = getOrCreateDoc(docId);
@@ -1255,7 +1279,7 @@ function createMcpServer(): McpServer {
     "insert_block",
     "Insert ONE new block immediately after a given block ID. Prefer this over edit_document when adding content between existing blocks; use edit_document(mode='append') only to append at the end. One idea per block — the first line should carry the gist so scanners get the point. Supports inline formatting (**bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url)), text/background color, alignment, type, and heading level. Multi-page docs: pass the same 'page' argument you used with read_document — block IDs are page-scoped.",
     {
-      doc_url: z.string().describe("Document URL or ID"),
+      doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
       after_block_id: z.string().describe("Insert the new block after this block ID"),
       text: z.string().describe("Text content. Supports: **bold**, *italic*, ~~strike~~, `code`, __underline__, [text](url)"),
       block_type: z.string().default("paragraph").describe("Block type: paragraph, heading, bulletListItem, numberedListItem, checkListItem"),
@@ -1265,7 +1289,11 @@ function createMcpServer(): McpServer {
       page: z.string().optional().describe("Optional page ID or title. Omit to target the first page."),
     },
     async ({ doc_url, after_block_id, text, block_type, level, text_color, background_color, page }) => {
-      const docId = extractDocIdFromUrl(doc_url);
+      let ctx: DocUrlContext;
+      try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const viewerErr = requireEditor(ctx);
+      if (viewerErr) return viewerErr;
+      const { docId } = ctx;
       logEvent("mcp.insert_block", docId, { after_block_id, block_type, page: page ?? null });
       try {
         const entry = getOrCreateDoc(docId);
@@ -1292,13 +1320,17 @@ function createMcpServer(): McpServer {
     "create_table",
     "Insert a table. Use for genuinely tabular or comparative data (schedules, comparisons, specs, pricing). Do NOT use when a short list would suffice — tables are visually heavy. Provide rows as a 2D array; first row is the header. Cells support inline formatting (**bold**, *italic*, [text](url), etc.). Pass after_block_id to place precisely; omit to append at the end. Multi-page docs: pass the same 'page' argument you used with read_document.",
     {
-      doc_url: z.string().describe("Document URL or ID"),
+      doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
       rows: z.array(z.array(z.string())).describe('2D array of cell text. Example: [["Name","Score"],["Alice","95"],["Bob","87"]]'),
       after_block_id: z.string().optional().describe("Insert table after this block ID. If omitted, appends to end of the page."),
       page: z.string().optional().describe("Optional page ID or title. Omit to target the first page."),
     },
     async ({ doc_url, rows, after_block_id, page }) => {
-      const docId = extractDocIdFromUrl(doc_url);
+      let ctx: DocUrlContext;
+      try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const viewerErr = requireEditor(ctx);
+      if (viewerErr) return viewerErr;
+      const { docId } = ctx;
       logEvent("mcp.create_table", docId, { rows: rows?.length ?? 0, cols: rows?.[0]?.length ?? 0, page: page ?? null });
       try {
         if (!rows || rows.length === 0) {
@@ -1335,11 +1367,14 @@ function createMcpServer(): McpServer {
     "list_pages",
     "List all pages (tabs) in a PostPaper document with their IDs and titles. Use this to discover the structure of a multi-page document before reading or editing. The first page in the list is the default target when you omit 'page' on other tools. A single-page document returns exactly one entry.",
     {
-      doc_url: z.string().describe("Document URL or ID"),
+      doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
     },
     async ({ doc_url }) => {
-      const docId = extractDocIdFromUrl(doc_url);
-      logEvent("mcp.list_pages", docId);
+      let ctx: DocUrlContext;
+      try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const { docId, viaShareToken, role } = ctx;
+      logEvent("mcp.list_pages", docId, { via: viaShareToken ? "share" : "doc" });
+      void role; // listing is always allowed; read_document surfaces the access note
       try {
         const entry = getOrCreateDoc(docId);
         const pages = listPages(entry.ydoc);
@@ -1360,11 +1395,15 @@ function createMcpServer(): McpServer {
     "create_page",
     "Create a new page (tab) in a PostPaper document and return its ID. Use this when the content the user is asking for would make the current page very long AND splits naturally into a distinct topic — e.g. separating 'API reference', 'Changelog', 'Roadmap', or large independent sections. Do NOT create a new page for a continuation of the current narrative, for every small section, or just because the current page is getting long. The title becomes the tab label (short noun phrase, ≤40 chars works best). After creation, pass the returned page id or the title to edit_document to populate it.",
     {
-      doc_url: z.string().describe("Document URL or ID"),
+      doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
       title: z.string().describe("Tab label. Short noun phrase works best (e.g. 'API reference', 'Changelog', 'Roadmap')."),
     },
     async ({ doc_url, title }) => {
-      const docId = extractDocIdFromUrl(doc_url);
+      let ctx: DocUrlContext;
+      try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const viewerErr = requireEditor(ctx);
+      if (viewerErr) return viewerErr;
+      const { docId } = ctx;
       logEvent("mcp.create_page", docId, { title });
       try {
         const entry = getOrCreateDoc(docId);
@@ -1387,12 +1426,16 @@ function createMcpServer(): McpServer {
     "rename_page",
     "Rename a page (tab) in a PostPaper document. Accepts either the page's current ID or its exact current title. Only rename when the user explicitly asks, or when the current title clearly no longer describes the page's content — do not rename pages someone else authored as a side effect of another task.",
     {
-      doc_url: z.string().describe("Document URL or ID"),
+      doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
       page: z.string().describe("The page ID or current title to rename."),
       new_title: z.string().describe("The new tab label. Short noun phrase; must be non-empty."),
     },
     async ({ doc_url, page, new_title }) => {
-      const docId = extractDocIdFromUrl(doc_url);
+      let ctx: DocUrlContext;
+      try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const viewerErr = requireEditor(ctx);
+      if (viewerErr) return viewerErr;
+      const { docId } = ctx;
       logEvent("mcp.rename_page", docId, { page });
       try {
         const entry = getOrCreateDoc(docId);
@@ -1483,6 +1526,19 @@ and AI agents may be editing alongside you in real time.
 - Do not touch blocks unrelated to the task, even if you think they could be improved.
 - Do not reorder or delete sections you did not author unless explicitly asked.
 - Always call read_document before editing to see current state and real block IDs.
+
+## URL formats — /doc/:id vs /v/:token
+Document URLs come in two shapes:
+- **/doc/:id** — canonical URL. Full editor access. Example: https://postpaper.co/doc/abc123.
+- **/v/:token** — read-only share link. You can read the document but all
+  write tools (update_block, insert_block, delete_block, edit_document,
+  create_table, create_page, rename_page) will reject your call with a
+  clear error. If the user pastes a /v/ URL and asks for edits, tell them
+  it is view-only and ask for the canonical /doc/:id URL.
+
+Never silently "interpret" a /v/:token path segment as a document ID — pass
+the whole URL to the tool and let it resolve. If the share token is unknown,
+the tool returns a not_found error; do not then fabricate a new document.
 
 ## Pages (Excel-style tabs) — when to split, when not to
 A document can have multiple pages, shown as tabs at the top. Each page is its
@@ -1583,11 +1639,64 @@ Headings are short noun phrases. Bold only on the data that matters.
 
 const FORMATTING_GUIDE = MCP_INSTRUCTIONS;
 
-function extractDocIdFromUrl(docUrl: string): string {
-  const match = docUrl.match(/\/doc\/([^/?#]+)/);
-  const id = match ? match[1] : docUrl.replace(/^\/+/, "").replace(/\/+$/, "");
+/** Context resolved from an MCP `doc_url` argument — either a canonical
+ *  /doc/:id URL (full editor access) or a /v/:token view-only link.
+ *
+ *  Role mirrors the share_tokens.role column for /v/ URLs; /doc/ URLs are
+ *  treated as "editor" here because MCP itself is an authorized channel —
+ *  finer-grained guards live at the feature level, not the URL parser. */
+type DocUrlContext = { docId: string; role: ShareRole; viaShareToken: boolean };
+
+function resolveDocUrl(docUrl: string): DocUrlContext {
+  // /v/:token — look up the share token to get the real doc id + role.
+  // Accept bare token as /v/... with no scheme, full URL, query/hash tails.
+  const viewerMatch = docUrl.match(/\/v\/([^/?#]+)/);
+  if (viewerMatch) {
+    const token = viewerMatch[1];
+    if (!token) {
+      throw new Error("Invalid view-only URL: missing token.");
+    }
+    const row = getShareTokenStmt.get(token) as
+      | { token: string; doc_id: string; role: string; created_at: string }
+      | undefined;
+    if (!row) {
+      throw new Error(
+        `View-only link not found (token "${token}"). The link may have been revoked, or you pasted a stale URL. Ask the owner for a fresh link, or use the canonical /doc/:id URL.`
+      );
+    }
+    if (!isValidShareRole(row.role)) {
+      throw new Error(`Corrupt share token: unknown role "${row.role}".`);
+    }
+    assertValidDocId(row.doc_id);
+    return { docId: row.doc_id, role: row.role, viaShareToken: true };
+  }
+
+  // /doc/:id — canonical editor URL.
+  const docMatch = docUrl.match(/\/doc\/([^/?#]+)/);
+  const id = docMatch ? docMatch[1] : docUrl.replace(/^\/+/, "").replace(/\/+$/, "");
   assertValidDocId(id);
-  return id;
+  return { docId: id, role: "editor", viaShareToken: false };
+}
+
+// Legacy helper kept for code paths that don't need the role (e.g. read-only
+// extraction). Delegates to resolveDocUrl and discards the role.
+function extractDocIdFromUrl(docUrl: string): string {
+  return resolveDocUrl(docUrl).docId;
+}
+
+/** MCP error for a write attempt via a view-only share link. */
+function mcpViewerWriteError() {
+  return mcpError(
+    "invalid_input",
+    "This is a view-only share link (/v/:token) — editing is not allowed. Ask the document owner for an editor link (/doc/:id), or request a commenter/editor share link when those become available."
+  );
+}
+
+/** Require editor privileges on the resolved URL. Returns the error result
+ *  if the caller used a view-only link — tool handlers should early-return it. */
+function requireEditor(ctx: DocUrlContext) {
+  if (ctx.role === "viewer") return mcpViewerWriteError();
+  return null;
 }
 
 // ─── HTTP API for document metadata ────────────────────────────────────────
