@@ -612,10 +612,12 @@ function createBlock(ydoc: Y.Doc, type: string, text: string, level?: number, st
   return container;
 }
 
-/** Append markdown text to a Yjs document */
-function appendTextToDoc(ydoc: Y.Doc, markdownText: string): number {
+/** Append markdown text to a Yjs document.
+ *  `fragmentName` defaults to "blocknote" (the first page). Multi-page docs
+ *  pass the target page's fragment name. */
+function appendTextToDoc(ydoc: Y.Doc, markdownText: string, fragmentName: string = "blocknote"): number {
   const blocks = parseMarkdown(markdownText);
-  const fragment = ydoc.getXmlFragment("blocknote");
+  const fragment = ydoc.getXmlFragment(fragmentName);
 
   ydoc.transact(() => {
     // Find or create the blockGroup
@@ -643,10 +645,10 @@ function appendTextToDoc(ydoc: Y.Doc, markdownText: string): number {
   return blocks.length;
 }
 
-/** Replace entire document content with markdown */
-function replaceDocContent(ydoc: Y.Doc, markdownText: string): number {
+/** Replace the contents of one page with markdown. */
+function replaceDocContent(ydoc: Y.Doc, markdownText: string, fragmentName: string = "blocknote"): number {
   const blocks = parseMarkdown(markdownText);
-  const fragment = ydoc.getXmlFragment("blocknote");
+  const fragment = ydoc.getXmlFragment(fragmentName);
 
   ydoc.transact(() => {
     // Clear everything
@@ -687,9 +689,9 @@ function findBlockContainer(fragment: Y.XmlFragment, blockId: string): { contain
   return search(fragment);
 }
 
-/** Update text of a specific block by ID */
-function updateBlockText(ydoc: Y.Doc, blockId: string, newText: string, newType?: string, newLevel?: number, style?: BlockStyle): boolean {
-  const fragment = ydoc.getXmlFragment("blocknote");
+/** Update text of a specific block by ID (within one page fragment). */
+function updateBlockText(ydoc: Y.Doc, blockId: string, newText: string, newType?: string, newLevel?: number, style?: BlockStyle, fragmentName: string = "blocknote"): boolean {
+  const fragment = ydoc.getXmlFragment(fragmentName);
   const found = findBlockContainer(fragment, blockId);
   if (!found) return false;
 
@@ -707,9 +709,9 @@ function updateBlockText(ydoc: Y.Doc, blockId: string, newText: string, newType?
   return true;
 }
 
-/** Delete a block by ID */
-function deleteBlock(ydoc: Y.Doc, blockId: string): boolean {
-  const fragment = ydoc.getXmlFragment("blocknote");
+/** Delete a block by ID (within one page fragment). */
+function deleteBlock(ydoc: Y.Doc, blockId: string, fragmentName: string = "blocknote"): boolean {
+  const fragment = ydoc.getXmlFragment(fragmentName);
   const found = findBlockContainer(fragment, blockId);
   if (!found) return false;
 
@@ -720,9 +722,9 @@ function deleteBlock(ydoc: Y.Doc, blockId: string): boolean {
   return true;
 }
 
-/** Insert a block after a specific block ID */
-function insertBlockAfter(ydoc: Y.Doc, afterBlockId: string, type: string, text: string, level?: number, style?: BlockStyle): string | null {
-  const fragment = ydoc.getXmlFragment("blocknote");
+/** Insert a block after a specific block ID (within one page fragment). */
+function insertBlockAfter(ydoc: Y.Doc, afterBlockId: string, type: string, text: string, level?: number, style?: BlockStyle, fragmentName: string = "blocknote"): string | null {
+  const fragment = ydoc.getXmlFragment(fragmentName);
   const found = findBlockContainer(fragment, afterBlockId);
   if (!found) return null;
 
@@ -786,9 +788,9 @@ function createTableBlock(rows: string[][]): { element: Y.XmlElement; id: string
   return { element: container, id };
 }
 
-/** Append a table to the document */
-function appendTable(ydoc: Y.Doc, rows: string[][]): string {
-  const fragment = ydoc.getXmlFragment("blocknote");
+/** Append a table to the end of one page fragment. */
+function appendTable(ydoc: Y.Doc, rows: string[][], fragmentName: string = "blocknote"): string {
+  const fragment = ydoc.getXmlFragment(fragmentName);
   const { element: tableBlock, id: blockId } = createTableBlock(rows);
 
   ydoc.transact(() => {
@@ -810,9 +812,9 @@ function appendTable(ydoc: Y.Doc, rows: string[][]): string {
   return blockId;
 }
 
-/** Insert a table after a specific block */
-function insertTableAfter(ydoc: Y.Doc, afterBlockId: string, rows: string[][]): string | null {
-  const fragment = ydoc.getXmlFragment("blocknote");
+/** Insert a table after a specific block (within one page fragment). */
+function insertTableAfter(ydoc: Y.Doc, afterBlockId: string, rows: string[][], fragmentName: string = "blocknote"): string | null {
+  const fragment = ydoc.getXmlFragment(fragmentName);
   const found = findBlockContainer(fragment, afterBlockId);
   if (!found) return null;
 
@@ -908,6 +910,124 @@ function send(ws: WebSocket, message: Uint8Array) {
   }
 }
 
+// ─── Pages (multi-page documents) ─────────────────────────────────────────
+//
+// A document can hold multiple pages. Data model (mirrored by the web UI in
+// components/PageTabs.tsx — keep in sync):
+//
+//   ydoc.getArray<string>("pageOrder")   — page ids in display order
+//   ydoc.getMap<string>("pageTitles")    — id → title
+//
+// Each page stores its block content in its own XmlFragment keyed by its id
+// (ydoc.getXmlFragment(pageId)). The first page keeps the special id
+// "blocknote" so single-page (legacy) documents continue to work unchanged —
+// their content already lives in that fragment.
+//
+// For MCP, a page reference accepted from the caller can be:
+//   - a page ID (matches exactly)
+//   - a page title (case-insensitive exact match; whitespace trimmed)
+//   - undefined → default to the first page
+// Only one match is returned; ambiguous titles raise a clear error.
+
+const FIRST_PAGE_ID = "blocknote";
+
+function generatePageId(): string {
+  // 10 random chars — matches the shape used by the web UI's newPageId().
+  return Math.random().toString(36).slice(2, 12);
+}
+
+/** Return the current list of pages. For docs that predate multi-page (no
+ *  pageOrder yet), reports a single implicit page for the "blocknote"
+ *  fragment. No state mutation — safe to call from read paths. */
+function listPages(ydoc: Y.Doc): { id: string; title: string }[] {
+  const order = ydoc.getArray<string>("pageOrder");
+  const titles = ydoc.getMap<string>("pageTitles");
+  const ids = order.toArray();
+  if (ids.length === 0) {
+    // Legacy doc — one implicit page backed by the "blocknote" fragment.
+    return [{ id: FIRST_PAGE_ID, title: titles.get(FIRST_PAGE_ID) || "Page 1" }];
+  }
+  const seen = new Set<string>();
+  const out: { id: string; title: string }[] = [];
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, title: titles.get(id) || "Untitled" });
+  }
+  return out;
+}
+
+/** Ensure the pageOrder/pageTitles metadata exists. Seeds it with the
+ *  conventional first-page entry pointing at the "blocknote" fragment. */
+function ensurePagesSeeded(ydoc: Y.Doc): void {
+  const order = ydoc.getArray<string>("pageOrder");
+  if (order.length > 0) return;
+  const titles = ydoc.getMap<string>("pageTitles");
+  ydoc.transact(() => {
+    order.push([FIRST_PAGE_ID]);
+    if (!titles.has(FIRST_PAGE_ID)) {
+      titles.set(FIRST_PAGE_ID, "Page 1");
+    }
+  });
+}
+
+/** Create a new page and append it to the order. Returns its id. */
+function createPage(ydoc: Y.Doc, title: string): string {
+  ensurePagesSeeded(ydoc);
+  const order = ydoc.getArray<string>("pageOrder");
+  const titles = ydoc.getMap<string>("pageTitles");
+  const trimmed = title.trim() || `Page ${order.length + 1}`;
+  const id = generatePageId();
+  ydoc.transact(() => {
+    order.push([id]);
+    titles.set(id, trimmed);
+  });
+  return id;
+}
+
+/** Rename a page. Returns false if the page does not exist. */
+function renamePage(ydoc: Y.Doc, pageId: string, newTitle: string): boolean {
+  const order = ydoc.getArray<string>("pageOrder");
+  const titles = ydoc.getMap<string>("pageTitles");
+  // Legacy docs: accept the implicit first-page id even if no pageOrder exists yet.
+  const ids = order.toArray();
+  const exists = ids.includes(pageId) || (ids.length === 0 && pageId === FIRST_PAGE_ID);
+  if (!exists) return false;
+  const trimmed = newTitle.trim() || "Untitled";
+  ydoc.transact(() => {
+    // If we're renaming the legacy implicit page, seed pageOrder so the title
+    // sticks (otherwise pageTitles is set but no one reads it).
+    if (ids.length === 0) ensurePagesSeeded(ydoc);
+    titles.set(pageId, trimmed);
+  });
+  return true;
+}
+
+/** Resolve a page reference to a concrete {id, title}. See file-level doc
+ *  comment for accepted shapes. Throws on ambiguous title, returns null on
+ *  unknown reference. */
+function resolvePageRef(
+  ydoc: Y.Doc,
+  ref: string | undefined | null
+): { id: string; title: string } | null {
+  const pages = listPages(ydoc);
+  if (!ref || !ref.trim()) return pages[0] ?? null;
+  const trimmed = ref.trim();
+  // Try ID match first (unambiguous).
+  const byId = pages.find((p) => p.id === trimmed);
+  if (byId) return byId;
+  // Fall back to title match (case-insensitive).
+  const lc = trimmed.toLowerCase();
+  const byTitle = pages.filter((p) => p.title.toLowerCase() === lc);
+  if (byTitle.length === 1) return byTitle[0];
+  if (byTitle.length > 1) {
+    throw new Error(
+      `Ambiguous page title "${trimmed}" — ${byTitle.length} pages share it. Use the page ID instead.`
+    );
+  }
+  return null;
+}
+
 // ─── MCP Server Factory ───────────────────────────────────────────────────
 // Creates a new MCP server instance with tools for reading and editing docs.
 // Each HTTP request gets its own instance (stateless mode).
@@ -933,30 +1053,66 @@ function mcpErrorFromException(e: unknown) {
   return mcpError("internal", message);
 }
 
+/** Resolve a page ref for an MCP tool. Returns an error result the handler
+ *  should return directly, or the concrete page when resolution succeeds. */
+function resolvePageForMcp(
+  ydoc: Y.Doc,
+  ref: string | undefined
+): { ok: true; page: { id: string; title: string } } |
+   { ok: false; error: ReturnType<typeof mcpError> } {
+  try {
+    const page = resolvePageRef(ydoc, ref);
+    if (!page) {
+      const pages = listPages(ydoc);
+      const list = pages.map((p) => `"${p.title}" (id: ${p.id})`).join(", ") || "(none)";
+      return {
+        ok: false,
+        error: mcpError(
+          "not_found",
+          `Page "${ref}" not found. Available pages: ${list}. Call list_pages for the authoritative list, or omit "page" to target the first page.`
+        ),
+      };
+    }
+    return { ok: true, page };
+  } catch (e) {
+    return { ok: false, error: mcpError("invalid_input", e instanceof Error ? e.message : String(e)) };
+  }
+}
+
 function createMcpServer(): McpServer {
   const mcp = new McpServer({
     name: "PostPaper",
-    version: "0.3.0",
+    version: "0.4.0",
     instructions: MCP_INSTRUCTIONS,
   });
 
   mcp.tool(
     "read_document",
-    "Read a PostPaper document. This is a live, multi-user, block-based editor: each block has a stable ID and is an independent unit of meaning. ALWAYS call this before editing — returns blocks with IDs so you can make surgical edits via update_block / insert_block / delete_block (preferred) instead of rewriting. Core mindset: think in blocks, not pages; one idea per block; headings are navigation, not decoration; preserve collaborators' work — do not touch blocks unrelated to the task.",
+    "Read one page of a PostPaper document. This is a live, multi-user, block-based editor: each block has a stable ID and is an independent unit of meaning. ALWAYS call this before editing — returns blocks with IDs so you can make surgical edits via update_block / insert_block / delete_block (preferred) instead of rewriting. A document can have multiple pages (Excel-style tabs) — without a page argument you get the first one. Use list_pages to discover other pages; pass their id or title via 'page' to read a specific tab. Core mindset: think in blocks, not pages; one idea per block; headings are navigation, not decoration; preserve collaborators' work — do not touch blocks unrelated to the task.",
     {
       doc_url: z.string().describe("Document URL (e.g. https://postpaper.co/doc/ABC123) or just the document ID"),
+      page: z.string().optional().describe("Optional page ID or title. Omit to read the first page. Call list_pages to see all pages."),
     },
-    async ({ doc_url }) => {
+    async ({ doc_url, page }) => {
       const docId = extractDocIdFromUrl(doc_url);
-      logEvent("mcp.read_document", docId);
+      logEvent("mcp.read_document", docId, { page: page ?? null });
       try {
         const entry = getOrCreateDoc(docId);
-        const blocks = extractBlocksWithIds(entry.ydoc);
+        const resolved = resolvePageForMcp(entry.ydoc, page);
+        if (!resolved.ok) return resolved.error;
+        const { page: targetPage } = resolved;
+        const pages = listPages(entry.ydoc);
+        const blocks = extractBlocksWithIds(entry.ydoc, targetPage.id);
+
+        const pageSummary = pages.length > 1
+          ? `\nPages in this document (${pages.length}): ${pages.map(p => `"${p.title}"`).join(", ")}. Currently reading: "${targetPage.title}".`
+          : "";
+
         if (blocks.length === 0) {
           return {
             content: [{
               type: "text" as const,
-              text: `Document (ID: ${docId}) is empty. Use edit_document to add content.`,
+              text: `Page "${targetPage.title}" in document (ID: ${docId}) is empty. Use edit_document with page="${targetPage.title}" to add content.${pageSummary}`,
             }],
           };
         }
@@ -972,7 +1128,7 @@ function createMcpServer(): McpServer {
         return {
           content: [{
             type: "text" as const,
-            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}), ${blocks.length} blocks:\n\n${lines.join("\n")}\n\n--- HOW TO EDIT ---\nThink in blocks, not pages. Each line above is one addressable block with a stable ID.\n- Change one block: update_block(block_id, text)\n- Add between blocks: insert_block(after_block_id, text)\n- Remove a block: delete_block(block_id)\n- Append at the end: edit_document(mode="append")\n- Tables: create_table(rows)\nNEVER use edit_document(mode="replace") unless the user explicitly asks to rewrite.\n\nPRESERVE COLLABORATORS' WORK: do not touch blocks unrelated to the task, even if you think they could be improved. One logical change per operation.\n\nFORMATTING: most blocks should be paragraphs (no prefix). Use "- " only for 3+ short parallel items; headings only for section titles; bold only on key terms. Inline: **bold**, *italic*, \`code\`, ~~strike~~, __underline__, [text](url).\n\nCOLORS: supported via text_color / background_color on update_block and insert_block. Palette: default, gray, brown, red, orange, yellow, green, blue, purple, pink. Use at most 1–2 accent colors per document, with consistent semantics (red=warning, green=success, blue=info, yellow bg=highlight).`,
+            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}) — page "${targetPage.title}" (${blocks.length} blocks):\n\n${lines.join("\n")}${pageSummary}\n\n--- HOW TO EDIT ---\nThink in blocks, not pages within a page. Each line above is one addressable block with a stable ID.\n- Change one block: update_block(block_id, text)\n- Add between blocks: insert_block(after_block_id, text)\n- Remove a block: delete_block(block_id)\n- Append at the end: edit_document(mode="append")\n- Tables: create_table(rows)\nAll write tools accept an optional "page" argument — pass the same page id or title you used here to keep edits on this tab. NEVER use edit_document(mode="replace") unless the user explicitly asks to rewrite.\n\nMULTIPLE PAGES: Use pages (tabs) to separate genuinely distinct sections — e.g. "API reference", "Changelog", "Roadmap" — when each would otherwise be a very long document section. Do NOT split a single flowing narrative across pages. Create a new page with create_page, then target it with edit_document(page=...).\n\nPRESERVE COLLABORATORS' WORK: do not touch blocks unrelated to the task, even if you think they could be improved. One logical change per operation.\n\nFORMATTING: most blocks should be paragraphs (no prefix). Use "- " only for 3+ short parallel items; headings only for section titles; bold only on key terms. Inline: **bold**, *italic*, \`code\`, ~~strike~~, __underline__, [text](url).\n\nCOLORS: supported via text_color / background_color on update_block and insert_block. Palette: default, gray, brown, red, orange, yellow, green, blue, purple, pink. Use at most 1–2 accent colors per document, with consistent semantics (red=warning, green=success, blue=info, yellow bg=highlight).`,
           }],
         };
       } catch (e) {
@@ -983,27 +1139,31 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "edit_document",
-    "Append (or replace) markdown content in a PostPaper document. Each line becomes one block; prefix sets type — no prefix = paragraph, # = heading, - = bullet, 1. = numbered, - [ ] = task. Inline: **bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url). For targeted edits ALWAYS prefer update_block / insert_block / delete_block — they preserve block IDs and don't disturb other collaborators. mode='replace' is a last resort; never use it unless the user explicitly asks to rewrite the whole document. For tables use create_table. For colors, write content first, then update_block with text_color/background_color.",
+    "Append (or replace) markdown content on ONE page of a PostPaper document. Each line becomes one block; prefix sets type — no prefix = paragraph, # = heading, - = bullet, 1. = numbered, - [ ] = task. Inline: **bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url). For targeted edits ALWAYS prefer update_block / insert_block / delete_block — they preserve block IDs and don't disturb other collaborators. mode='replace' is a last resort; never use it unless the user explicitly asks to rewrite the whole page. For tables use create_table. For colors, write content first, then update_block with text_color/background_color. Pass 'page' to target a specific tab — omit to write to the first page. If the content would make the page very long and splits naturally into distinct topics, consider create_page + edit_document to put the new section on its own tab instead.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       content: z.string().describe("Markdown text. NO prefix = paragraph. # = heading. - = bullet. 1. = numbered. - [ ] = checklist. **bold** *italic* `code` [text](url)"),
-      mode: z.enum(["append", "replace"]).default("append").describe("'append' adds to end (default). ONLY use 'replace' when user explicitly asks to rewrite the whole document."),
+      mode: z.enum(["append", "replace"]).default("append").describe("'append' adds to end (default). ONLY use 'replace' when user explicitly asks to rewrite the whole page."),
+      page: z.string().optional().describe("Optional page ID or title. Omit to write to the first page. Call list_pages to see available pages or create_page to add a new one."),
     },
-    async ({ doc_url, content, mode }) => {
+    async ({ doc_url, content, mode, page }) => {
       const docId = extractDocIdFromUrl(doc_url);
-      logEvent("mcp.edit_document", docId, { mode, chars: content.length });
+      logEvent("mcp.edit_document", docId, { mode, chars: content.length, page: page ?? null });
       try {
         const entry = getOrCreateDoc(docId);
+        const resolved = resolvePageForMcp(entry.ydoc, page);
+        if (!resolved.ok) return resolved.error;
+        const { page: targetPage } = resolved;
         let count: number;
         if (mode === "replace") {
-          count = replaceDocContent(entry.ydoc, content);
+          count = replaceDocContent(entry.ydoc, content, targetPage.id);
         } else {
-          count = appendTextToDoc(entry.ydoc, content);
+          count = appendTextToDoc(entry.ydoc, content, targetPage.id);
         }
         return {
           content: [{
             type: "text" as const,
-            text: `Done! ${mode === "replace" ? "Replaced" : "Appended"} ${count} blocks. View: ${VERCEL_URL}/doc/${docId}\nTip: To add colors, use read_document to get block IDs, then update_block with text_color/background_color.`,
+            text: `Done! ${mode === "replace" ? "Replaced" : "Appended"} ${count} blocks on page "${targetPage.title}". View: ${VERCEL_URL}/doc/${docId}${targetPage.id === FIRST_PAGE_ID ? "" : `#${targetPage.id}`}\nTip: To add colors, use read_document to get block IDs, then update_block with text_color/background_color.`,
           }],
         };
       } catch (e) {
@@ -1014,7 +1174,7 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "update_block",
-    "Edit ONE block by ID — the preferred tool for targeted changes. Preserves the block's identity (other editors' cursors and references stay valid) and leaves unrelated blocks untouched. Use read_document first to get IDs. For multiple changes, call update_block multiple times rather than rewriting via edit_document. Supports inline formatting (**bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url)), text/background color, alignment, type change, and heading level.",
+    "Edit ONE block by ID — the preferred tool for targeted changes. Preserves the block's identity (other editors' cursors and references stay valid) and leaves unrelated blocks untouched. Use read_document first to get IDs. For multiple changes, call update_block multiple times rather than rewriting via edit_document. Supports inline formatting (**bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url)), text/background color, alignment, type change, and heading level. Multi-page docs: pass the same 'page' argument you used with read_document — block IDs are scoped to one page.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       block_id: z.string().describe("The block ID to update (from read_document output, shown in [brackets])"),
@@ -1024,17 +1184,21 @@ function createMcpServer(): McpServer {
       text_color: z.string().optional().describe("Text color: default, gray, brown, red, orange, yellow, green, blue, purple, pink"),
       background_color: z.string().optional().describe("Background color: default, gray, brown, red, orange, yellow, green, blue, purple, pink"),
       text_alignment: z.string().optional().describe("Alignment: left, center, right"),
+      page: z.string().optional().describe("Optional page ID or title the block lives on. Omit to target the first page."),
     },
-    async ({ doc_url, block_id, text, block_type, level, text_color, background_color, text_alignment }) => {
+    async ({ doc_url, block_id, text, block_type, level, text_color, background_color, text_alignment, page }) => {
       const docId = extractDocIdFromUrl(doc_url);
-      logEvent("mcp.update_block", docId, { block_id });
+      logEvent("mcp.update_block", docId, { block_id, page: page ?? null });
       try {
         const entry = getOrCreateDoc(docId);
+        const resolved = resolvePageForMcp(entry.ydoc, page);
+        if (!resolved.ok) return resolved.error;
+        const { page: targetPage } = resolved;
 
         // If no type specified, detect current type
         let type = block_type;
         if (!type) {
-          const blocks = extractBlocksWithIds(entry.ydoc);
+          const blocks = extractBlocksWithIds(entry.ydoc, targetPage.id);
           const current = blocks.find(b => b.id === block_id);
           type = current?.type || "paragraph";
           if (!level && current?.level) level = current.level;
@@ -1045,12 +1209,12 @@ function createMcpServer(): McpServer {
         if (background_color) style.backgroundColor = background_color;
         if (text_alignment) style.textAlignment = text_alignment;
 
-        const ok = updateBlockText(entry.ydoc, block_id, text, type, level, style);
+        const ok = updateBlockText(entry.ydoc, block_id, text, type, level, style, targetPage.id);
         if (!ok) {
-          return mcpError("not_found", `Block "${block_id}" not found. Use read_document to get current block IDs.`);
+          return mcpError("not_found", `Block "${block_id}" not found on page "${targetPage.title}". Use read_document (with the same page) to get current block IDs.`);
         }
         return {
-          content: [{ type: "text" as const, text: `Updated block ${block_id}. View: ${VERCEL_URL}/doc/${docId}` }],
+          content: [{ type: "text" as const, text: `Updated block ${block_id} on page "${targetPage.title}". View: ${VERCEL_URL}/doc/${docId}${targetPage.id === FIRST_PAGE_ID ? "" : `#${targetPage.id}`}` }],
         };
       } catch (e) {
         return mcpErrorFromException(e);
@@ -1060,22 +1224,26 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "delete_block",
-    "Delete ONE block by ID. Only delete blocks that are clearly part of the requested change — other humans and agents may be editing in parallel, so do not delete blocks you did not author unless the user explicitly asks. Use read_document first to get IDs.",
+    "Delete ONE block by ID. Only delete blocks that are clearly part of the requested change — other humans and agents may be editing in parallel, so do not delete blocks you did not author unless the user explicitly asks. Use read_document first to get IDs. Multi-page docs: pass the same 'page' argument you used with read_document.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       block_id: z.string().describe("The block ID to delete"),
+      page: z.string().optional().describe("Optional page ID or title the block lives on. Omit to target the first page."),
     },
-    async ({ doc_url, block_id }) => {
+    async ({ doc_url, block_id, page }) => {
       const docId = extractDocIdFromUrl(doc_url);
-      logEvent("mcp.delete_block", docId, { block_id });
+      logEvent("mcp.delete_block", docId, { block_id, page: page ?? null });
       try {
         const entry = getOrCreateDoc(docId);
-        const ok = deleteBlock(entry.ydoc, block_id);
+        const resolved = resolvePageForMcp(entry.ydoc, page);
+        if (!resolved.ok) return resolved.error;
+        const { page: targetPage } = resolved;
+        const ok = deleteBlock(entry.ydoc, block_id, targetPage.id);
         if (!ok) {
-          return mcpError("not_found", `Block "${block_id}" not found.`);
+          return mcpError("not_found", `Block "${block_id}" not found on page "${targetPage.title}".`);
         }
         return {
-          content: [{ type: "text" as const, text: `Deleted block ${block_id}. View: ${VERCEL_URL}/doc/${docId}` }],
+          content: [{ type: "text" as const, text: `Deleted block ${block_id} from page "${targetPage.title}". View: ${VERCEL_URL}/doc/${docId}${targetPage.id === FIRST_PAGE_ID ? "" : `#${targetPage.id}`}` }],
         };
       } catch (e) {
         return mcpErrorFromException(e);
@@ -1085,7 +1253,7 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "insert_block",
-    "Insert ONE new block immediately after a given block ID. Prefer this over edit_document when adding content between existing blocks; use edit_document(mode='append') only to append at the end. One idea per block — the first line should carry the gist so scanners get the point. Supports inline formatting (**bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url)), text/background color, alignment, type, and heading level.",
+    "Insert ONE new block immediately after a given block ID. Prefer this over edit_document when adding content between existing blocks; use edit_document(mode='append') only to append at the end. One idea per block — the first line should carry the gist so scanners get the point. Supports inline formatting (**bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url)), text/background color, alignment, type, and heading level. Multi-page docs: pass the same 'page' argument you used with read_document — block IDs are page-scoped.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       after_block_id: z.string().describe("Insert the new block after this block ID"),
@@ -1094,21 +1262,25 @@ function createMcpServer(): McpServer {
       level: z.number().optional().describe("Heading level (1-3). Only for headings."),
       text_color: z.string().optional().describe("Text color: default, gray, brown, red, orange, yellow, green, blue, purple, pink"),
       background_color: z.string().optional().describe("Background color: default, gray, brown, red, orange, yellow, green, blue, purple, pink"),
+      page: z.string().optional().describe("Optional page ID or title. Omit to target the first page."),
     },
-    async ({ doc_url, after_block_id, text, block_type, level, text_color, background_color }) => {
+    async ({ doc_url, after_block_id, text, block_type, level, text_color, background_color, page }) => {
       const docId = extractDocIdFromUrl(doc_url);
-      logEvent("mcp.insert_block", docId, { after_block_id, block_type });
+      logEvent("mcp.insert_block", docId, { after_block_id, block_type, page: page ?? null });
       try {
         const entry = getOrCreateDoc(docId);
+        const resolved = resolvePageForMcp(entry.ydoc, page);
+        if (!resolved.ok) return resolved.error;
+        const { page: targetPage } = resolved;
         const style: BlockStyle = {};
         if (text_color) style.textColor = text_color;
         if (background_color) style.backgroundColor = background_color;
-        const newId = insertBlockAfter(entry.ydoc, after_block_id, block_type, text, level, style);
+        const newId = insertBlockAfter(entry.ydoc, after_block_id, block_type, text, level, style, targetPage.id);
         if (!newId) {
-          return mcpError("not_found", `Block "${after_block_id}" not found. Use read_document to get current block IDs.`);
+          return mcpError("not_found", `Block "${after_block_id}" not found on page "${targetPage.title}". Use read_document (with the same page) to get current block IDs.`);
         }
         return {
-          content: [{ type: "text" as const, text: `Inserted new block ${newId} after ${after_block_id}. View: ${VERCEL_URL}/doc/${docId}` }],
+          content: [{ type: "text" as const, text: `Inserted new block ${newId} after ${after_block_id} on page "${targetPage.title}". View: ${VERCEL_URL}/doc/${docId}${targetPage.id === FIRST_PAGE_ID ? "" : `#${targetPage.id}`}` }],
         };
       } catch (e) {
         return mcpErrorFromException(e);
@@ -1118,33 +1290,123 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "create_table",
-    "Insert a table. Use for genuinely tabular or comparative data (schedules, comparisons, specs, pricing). Do NOT use when a short list would suffice — tables are visually heavy. Provide rows as a 2D array; first row is the header. Cells support inline formatting (**bold**, *italic*, [text](url), etc.). Pass after_block_id to place precisely; omit to append at the end.",
+    "Insert a table. Use for genuinely tabular or comparative data (schedules, comparisons, specs, pricing). Do NOT use when a short list would suffice — tables are visually heavy. Provide rows as a 2D array; first row is the header. Cells support inline formatting (**bold**, *italic*, [text](url), etc.). Pass after_block_id to place precisely; omit to append at the end. Multi-page docs: pass the same 'page' argument you used with read_document.",
     {
       doc_url: z.string().describe("Document URL or ID"),
       rows: z.array(z.array(z.string())).describe('2D array of cell text. Example: [["Name","Score"],["Alice","95"],["Bob","87"]]'),
-      after_block_id: z.string().optional().describe("Insert table after this block ID. If omitted, appends to end of document."),
+      after_block_id: z.string().optional().describe("Insert table after this block ID. If omitted, appends to end of the page."),
+      page: z.string().optional().describe("Optional page ID or title. Omit to target the first page."),
     },
-    async ({ doc_url, rows, after_block_id }) => {
+    async ({ doc_url, rows, after_block_id, page }) => {
       const docId = extractDocIdFromUrl(doc_url);
-      logEvent("mcp.create_table", docId, { rows: rows?.length ?? 0, cols: rows?.[0]?.length ?? 0 });
+      logEvent("mcp.create_table", docId, { rows: rows?.length ?? 0, cols: rows?.[0]?.length ?? 0, page: page ?? null });
       try {
         if (!rows || rows.length === 0) {
           return mcpError("invalid_input", "rows must have at least one row.");
         }
         const entry = getOrCreateDoc(docId);
+        const resolved = resolvePageForMcp(entry.ydoc, page);
+        if (!resolved.ok) return resolved.error;
+        const { page: targetPage } = resolved;
         let tableId: string | null;
         if (after_block_id) {
-          tableId = insertTableAfter(entry.ydoc, after_block_id, rows);
+          tableId = insertTableAfter(entry.ydoc, after_block_id, rows, targetPage.id);
           if (!tableId) {
-            return mcpError("not_found", `Block "${after_block_id}" not found. Use read_document to get current block IDs.`);
+            return mcpError("not_found", `Block "${after_block_id}" not found on page "${targetPage.title}". Use read_document (with the same page) to get current block IDs.`);
           }
         } else {
-          tableId = appendTable(entry.ydoc, rows);
+          tableId = appendTable(entry.ydoc, rows, targetPage.id);
         }
         return {
           content: [{
             type: "text" as const,
-            text: `Created table (${rows.length} rows × ${rows[0].length} cols) with ID ${tableId}. View: ${VERCEL_URL}/doc/${docId}`,
+            text: `Created table (${rows.length} rows × ${rows[0].length} cols) with ID ${tableId} on page "${targetPage.title}". View: ${VERCEL_URL}/doc/${docId}${targetPage.id === FIRST_PAGE_ID ? "" : `#${targetPage.id}`}`,
+          }],
+        };
+      } catch (e) {
+        return mcpErrorFromException(e);
+      }
+    }
+  );
+
+  // ─── Page-management tools ──────────────────────────────────────────
+
+  mcp.tool(
+    "list_pages",
+    "List all pages (tabs) in a PostPaper document with their IDs and titles. Use this to discover the structure of a multi-page document before reading or editing. The first page in the list is the default target when you omit 'page' on other tools. A single-page document returns exactly one entry.",
+    {
+      doc_url: z.string().describe("Document URL or ID"),
+    },
+    async ({ doc_url }) => {
+      const docId = extractDocIdFromUrl(doc_url);
+      logEvent("mcp.list_pages", docId);
+      try {
+        const entry = getOrCreateDoc(docId);
+        const pages = listPages(entry.ydoc);
+        const lines = pages.map((p, i) => `${i + 1}. "${p.title}" — id: ${p.id}${i === 0 ? " (default)" : ""}`);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Document (ID: ${docId}) has ${pages.length} page${pages.length === 1 ? "" : "s"}:\n\n${lines.join("\n")}\n\nTo read a specific page: read_document(page="<id or title>"). To add a new page: create_page(title="..."). Omit the 'page' argument on any tool to target the first page.`,
+          }],
+        };
+      } catch (e) {
+        return mcpErrorFromException(e);
+      }
+    }
+  );
+
+  mcp.tool(
+    "create_page",
+    "Create a new page (tab) in a PostPaper document and return its ID. Use this when the content the user is asking for would make the current page very long AND splits naturally into a distinct topic — e.g. separating 'API reference', 'Changelog', 'Roadmap', or large independent sections. Do NOT create a new page for a continuation of the current narrative, for every small section, or just because the current page is getting long. The title becomes the tab label (short noun phrase, ≤40 chars works best). After creation, pass the returned page id or the title to edit_document to populate it.",
+    {
+      doc_url: z.string().describe("Document URL or ID"),
+      title: z.string().describe("Tab label. Short noun phrase works best (e.g. 'API reference', 'Changelog', 'Roadmap')."),
+    },
+    async ({ doc_url, title }) => {
+      const docId = extractDocIdFromUrl(doc_url);
+      logEvent("mcp.create_page", docId, { title });
+      try {
+        const entry = getOrCreateDoc(docId);
+        const trimmed = title.trim();
+        if (!trimmed) return mcpError("invalid_input", "title cannot be empty.");
+        const pageId = createPage(entry.ydoc, trimmed);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Created page "${trimmed}" (id: ${pageId}). To populate it, call edit_document(page="${pageId}", content="...") or use the title: edit_document(page="${trimmed}", ...). View: ${VERCEL_URL}/doc/${docId}#${pageId}`,
+          }],
+        };
+      } catch (e) {
+        return mcpErrorFromException(e);
+      }
+    }
+  );
+
+  mcp.tool(
+    "rename_page",
+    "Rename a page (tab) in a PostPaper document. Accepts either the page's current ID or its exact current title. Only rename when the user explicitly asks, or when the current title clearly no longer describes the page's content — do not rename pages someone else authored as a side effect of another task.",
+    {
+      doc_url: z.string().describe("Document URL or ID"),
+      page: z.string().describe("The page ID or current title to rename."),
+      new_title: z.string().describe("The new tab label. Short noun phrase; must be non-empty."),
+    },
+    async ({ doc_url, page, new_title }) => {
+      const docId = extractDocIdFromUrl(doc_url);
+      logEvent("mcp.rename_page", docId, { page });
+      try {
+        const entry = getOrCreateDoc(docId);
+        const trimmed = new_title.trim();
+        if (!trimmed) return mcpError("invalid_input", "new_title cannot be empty.");
+        const resolved = resolvePageForMcp(entry.ydoc, page);
+        if (!resolved.ok) return resolved.error;
+        const { page: targetPage } = resolved;
+        const ok = renamePage(entry.ydoc, targetPage.id, trimmed);
+        if (!ok) return mcpError("not_found", `Page "${page}" not found.`);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Renamed page "${targetPage.title}" to "${trimmed}" (id: ${targetPage.id}). View: ${VERCEL_URL}/doc/${docId}${targetPage.id === FIRST_PAGE_ID ? "" : `#${targetPage.id}`}`,
           }],
         };
       } catch (e) {
@@ -1222,6 +1484,31 @@ and AI agents may be editing alongside you in real time.
 - Do not reorder or delete sections you did not author unless explicitly asked.
 - Always call read_document before editing to see current state and real block IDs.
 
+## Pages (Excel-style tabs) — when to split, when not to
+A document can have multiple pages, shown as tabs at the top. Each page is its
+own independent block stream — block IDs are scoped to one page. The first
+page is the default target; every tool that takes 'page' accepts the tab ID
+or its title.
+
+Use pages to separate **genuinely distinct topics** that each deserve their
+own scroll:
+- Reference material vs. narrative (e.g. "Guide" + "API reference")
+- Time-separated artifacts (e.g. "2026 plans" + "2025 retro" + "Changelog")
+- Parallel deliverables sharing one project (e.g. "PRD" + "Launch plan" + "Metrics")
+
+Do **not** create a new page for:
+- A continuation of the same narrative — keep it on the current page with headings.
+- Every H2 section of the current page — that's what headings are for.
+- A short aside that is only meaningful in context of what came before it.
+- Just because the current page is long. Length alone is not a reason to split.
+
+Rule of thumb: if someone printing the document would expect a page break there
+with the new section starting fresh and standalone, it's a new page. If they'd
+expect the content to flow on, keep it on the same page.
+
+Tools: list_pages (discover), create_page (add), rename_page (relabel). All
+read/write tools accept an optional 'page' argument — pass the tab id or title.
+
 # CAPABILITIES
 
 ## Block types — edit_document uses one line per block; the prefix sets the type
@@ -1245,12 +1532,18 @@ Color semantics (stay consistent; 1–2 accent colors per document max):
 - yellow bg → highlight          red bg → critical warning      blue bg → info box
 
 # WORKFLOW
-1. read_document — see current content and block IDs.
-2. Pick the smallest set of operations that achieves the goal.
-3. Prefer update_block / insert_block / delete_block for targeted edits.
-4. Use edit_document(mode="append") only to add new content at the end.
-5. edit_document(mode="replace") is a last resort — only when explicitly asked to rewrite.
-6. Use create_table for genuinely tabular data (not as a replacement for lists).
+1. If you don't know the document's pages yet (e.g. user gave you a fresh URL
+   and you plan edits larger than a single block), call list_pages first.
+2. read_document — see current content and block IDs. Pass 'page' if the
+   target isn't the first tab.
+3. Pick the smallest set of operations that achieves the goal. If the new
+   content is a genuinely separate topic that would bloat the current page,
+   consider create_page before writing. Otherwise stay on the current page.
+4. Prefer update_block / insert_block / delete_block for targeted edits. Pass
+   the same 'page' argument you read from.
+5. Use edit_document(mode="append") to add new content at the end of a page.
+6. edit_document(mode="replace") is a last resort — only when explicitly asked to rewrite.
+7. Use create_table for genuinely tabular data (not as a replacement for lists).
 
 # HARD NO
 - Do not make every line a bullet. This is the #1 mistake.

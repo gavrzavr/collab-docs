@@ -92,9 +92,12 @@ export interface ExtractedBlock {
   level?: number;
 }
 
-/** Walk the document fragment and return one entry per block. */
-export function extractBlocks(ydoc: Y.Doc): ExtractedBlock[] {
-  const fragment = ydoc.getXmlFragment("blocknote");
+/** Walk the document fragment and return one entry per block.
+ *  `fragmentName` defaults to "blocknote" — the first (and only, for legacy
+ *  single-page docs) page. Multi-page docs store additional pages under
+ *  other fragment names; see PageTabs / pageOrder for the id list. */
+export function extractBlocks(ydoc: Y.Doc, fragmentName: string = "blocknote"): ExtractedBlock[] {
+  const fragment = ydoc.getXmlFragment(fragmentName);
   const blocks: ExtractedBlock[] = [];
 
   const walkBlockGroup = (bg: Y.XmlElement) => {
@@ -130,9 +133,9 @@ export function extractBlocks(ydoc: Y.Doc): ExtractedBlock[] {
   return blocks;
 }
 
-/** Render the whole document as a single markdown string. */
-export function extractDocumentMarkdown(ydoc: Y.Doc): string {
-  return extractBlocks(ydoc)
+/** Render one page as a single markdown string. */
+export function extractDocumentMarkdown(ydoc: Y.Doc, fragmentName: string = "blocknote"): string {
+  return extractBlocks(ydoc, fragmentName)
     .map((b) => {
       if (b.type === "heading") return "#".repeat(b.level || 1) + " " + b.text;
       if (b.type === "bulletListItem") return "- " + b.text;
