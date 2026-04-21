@@ -238,26 +238,6 @@ export default function PageTabs({ ydoc, pages, activeId, onSwitch, readOnly }: 
               ) : (
                 <span className="pointer-events-none">{p.title}</span>
               )}
-
-              {/* Close button (not shown in read-only or while renaming) */}
-              {!readOnly && renameId !== p.id && (
-                <span
-                  role="button"
-                  aria-label="Delete page"
-                  title="Delete page"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    deletePage(p.id);
-                  }}
-                  className={[
-                    "w-4 h-4 rounded text-gray-500 text-xs leading-[14px] text-center",
-                    isActive ? "inline-block" : "hidden group-hover:inline-block",
-                    "hover:bg-gray-300 hover:text-gray-900",
-                  ].join(" ")}
-                >
-                  ×
-                </span>
-              )}
             </div>
           );
         })}
