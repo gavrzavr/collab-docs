@@ -727,13 +727,18 @@ function insertBlockAfter(ydoc: Y.Doc, afterBlockId: string, type: string, text:
   if (!found) return null;
 
   const newBlock = createBlock(ydoc, type, text, level, style);
-  const newId = newBlock.getAttribute("id") || "";
 
   ydoc.transact(() => {
     found.parent.insert(found.index + 1, [newBlock]);
   });
 
-  return newId;
+  // getAttribute() returns "" on a detached Y.XmlElement — read the ID
+  // ONLY after the element has been integrated into the tree inside the
+  // transaction above. Before that it's still a prelim element and the
+  // id attribute isn't observable yet. (See CLAUDE.md under "Critical
+  // quirks" — this was the cause of spurious not_found errors from the
+  // MCP insert_block tool.)
+  return newBlock.getAttribute("id") || null;
 }
 
 /** Create a table block from a 2D array of cell text */
