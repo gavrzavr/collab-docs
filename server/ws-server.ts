@@ -985,6 +985,32 @@ function createPage(ydoc: Y.Doc, title: string): string {
   return id;
 }
 
+/** Delete a page. Returns a result describing the outcome:
+ *  - { ok: true } on success
+ *  - { ok: false, reason: "not_found" } if the page doesn't exist
+ *  - { ok: false, reason: "last_page" } if trying to delete the only page
+ *
+ *  The underlying XmlFragment keyed by the page id lingers (Yjs has no
+ *  "delete fragment" primitive) — this is the same trade-off the web UI
+ *  makes in PageTabs.tsx. Cost is a few bytes per orphan fragment. */
+function deletePage(
+  ydoc: Y.Doc,
+  pageId: string
+): { ok: true } | { ok: false; reason: "not_found" | "last_page" } {
+  ensurePagesSeeded(ydoc);
+  const order = ydoc.getArray<string>("pageOrder");
+  const titles = ydoc.getMap<string>("pageTitles");
+  const ids = order.toArray();
+  const idx = ids.indexOf(pageId);
+  if (idx < 0) return { ok: false, reason: "not_found" };
+  if (ids.length <= 1) return { ok: false, reason: "last_page" };
+  ydoc.transact(() => {
+    order.delete(idx, 1);
+    titles.delete(pageId);
+  });
+  return { ok: true };
+}
+
 /** Rename a page. Returns false if the page does not exist. */
 function renamePage(ydoc: Y.Doc, pageId: string, newTitle: string): boolean {
   const order = ydoc.getArray<string>("pageOrder");
@@ -1082,7 +1108,7 @@ function resolvePageForMcp(
 function createMcpServer(): McpServer {
   const mcp = new McpServer({
     name: "PostPaper",
-    version: "0.4.0",
+    version: "0.4.1",
     instructions: MCP_INSTRUCTIONS,
   });
 
@@ -1393,7 +1419,7 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "create_page",
-    "Create a new page (tab) in a PostPaper document and return its ID. Use this when the content the user is asking for would make the current page very long AND splits naturally into a distinct topic — e.g. separating 'API reference', 'Changelog', 'Roadmap', or large independent sections. Do NOT create a new page for a continuation of the current narrative, for every small section, or just because the current page is getting long. The title becomes the tab label (short noun phrase, ≤40 chars works best). After creation, pass the returned page id or the title to edit_document to populate it.",
+    "Create a new page (tab) in a PostPaper document and return its ID. CALL THIS DIRECTLY when the user asks for a new page/tab/section — do not ask for confirmation, just do it and report the result. You may also use it autonomously when organizing content: if the user asks for a large deliverable that naturally splits into distinct topics (e.g. separating 'API reference' from 'Changelog' from 'Roadmap'), create the tabs first, then populate them. Avoid creating pages for continuations of a single narrative, for every small section, or just because a page is getting long — those belong in headings on the current page. The title becomes the tab label (short noun phrase, ≤40 chars works best). After creation, pass the returned page id or the title to edit_document to populate it.",
     {
       doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
       title: z.string().describe("Tab label. Short noun phrase works best (e.g. 'API reference', 'Changelog', 'Roadmap')."),
@@ -1424,7 +1450,7 @@ function createMcpServer(): McpServer {
 
   mcp.tool(
     "rename_page",
-    "Rename a page (tab) in a PostPaper document. Accepts either the page's current ID or its exact current title. Only rename when the user explicitly asks, or when the current title clearly no longer describes the page's content — do not rename pages someone else authored as a side effect of another task.",
+    "Rename a page (tab) in a PostPaper document. CALL THIS DIRECTLY when the user asks to rename a tab — do not ask for confirmation, just do it. Accepts either the page's current ID or its exact current title. Don't rename pages unrelated to the task as a side effect (e.g. don't 'clean up' titles the user didn't ask about).",
     {
       doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
       page: z.string().describe("The page ID or current title to rename."),
@@ -1450,6 +1476,47 @@ function createMcpServer(): McpServer {
           content: [{
             type: "text" as const,
             text: `Renamed page "${targetPage.title}" to "${trimmed}" (id: ${targetPage.id}). View: ${VERCEL_URL}/doc/${docId}${targetPage.id === FIRST_PAGE_ID ? "" : `#${targetPage.id}`}`,
+          }],
+        };
+      } catch (e) {
+        return mcpErrorFromException(e);
+      }
+    }
+  );
+
+  mcp.tool(
+    "delete_page",
+    "Delete a page (tab) and all its blocks. CALL THIS DIRECTLY when the user asks to delete/remove a tab — do not ask for confirmation, just do it. Accepts the page ID or exact current title. Rules: (1) a document must keep at least one page — attempting to delete the only page returns an error; (2) don't delete pages the user did NOT ask about, even if they look empty or orphaned — other collaborators may be using them. Deletion cannot be undone through MCP; if the user asks to 'clear' or 'empty' a page rather than remove the tab, prefer edit_document(mode=\"replace\", content=\"\") instead.",
+    {
+      doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
+      page: z.string().describe("The page ID or current title to delete."),
+    },
+    async ({ doc_url, page }) => {
+      let ctx: DocUrlContext;
+      try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const viewerErr = requireEditor(ctx);
+      if (viewerErr) return viewerErr;
+      const { docId } = ctx;
+      logEvent("mcp.delete_page", docId, { page });
+      try {
+        const entry = getOrCreateDoc(docId);
+        const resolved = resolvePageForMcp(entry.ydoc, page);
+        if (!resolved.ok) return resolved.error;
+        const { page: targetPage } = resolved;
+        const result = deletePage(entry.ydoc, targetPage.id);
+        if (!result.ok && result.reason === "last_page") {
+          return mcpError(
+            "invalid_input",
+            `Cannot delete "${targetPage.title}" — a document must have at least one page. If the user wants the tab gone entirely, first create another page to hold the content, then retry the delete.`
+          );
+        }
+        if (!result.ok) {
+          return mcpError("not_found", `Page "${page}" not found.`);
+        }
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Deleted page "${targetPage.title}" (id: ${targetPage.id}). View: ${VERCEL_URL}/doc/${docId}`,
           }],
         };
       } catch (e) {
@@ -1562,8 +1629,15 @@ Rule of thumb: if someone printing the document would expect a page break there
 with the new section starting fresh and standalone, it's a new page. If they'd
 expect the content to flow on, keep it on the same page.
 
-Tools: list_pages (discover), create_page (add), rename_page (relabel). All
-read/write tools accept an optional 'page' argument — pass the tab id or title.
+When the user asks you to add, rename, or delete a tab, **just do it** via
+the tool and report the result — do not ask for confirmation and do not tell
+the user "you can do this by right-clicking." You have direct MCP access to:
+- list_pages  — enumerate tabs
+- create_page — add a tab (may be called autonomously when organizing new content)
+- rename_page — relabel a tab
+- delete_page — remove a tab (a document must keep at least one)
+All read/write content tools accept an optional 'page' argument — pass the tab
+id or title to target it.
 
 # CAPABILITIES
 
