@@ -1108,9 +1108,24 @@ function resolvePageForMcp(
 function createMcpServer(): McpServer {
   const mcp = new McpServer({
     name: "PostPaper",
-    version: "0.4.1",
+    version: "0.4.2",
     instructions: MCP_INSTRUCTIONS,
   });
+
+  // Nudge clients that cache tools/list across chat sessions (notably the
+  // Claude.ai connector UI) to re-fetch the list right after they finish the
+  // handshake. Without this, newly-deployed tools stay invisible until the
+  // user manually disconnects and reconnects the MCP. Clients that already
+  // re-fetch on every init ignore this cheaply; clients that respect the
+  // notification pick up new tools transparently. Not a panacea — some
+  // clients ignore it entirely — but it's a 3-line win where it works.
+  mcp.server.oninitialized = () => {
+    try {
+      mcp.sendToolListChanged();
+    } catch {
+      // Transport may have closed between init and this callback — ignore.
+    }
+  };
 
   mcp.tool(
     "read_document",
