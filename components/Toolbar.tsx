@@ -8,9 +8,11 @@ interface ToolbarProps {
   docId: string;
   sessionUser?: { name: string; email: string; image?: string } | null;
   onImportHtml?: (html: string) => void;
+  /** Hide mutating actions (Import) when the user is on a read-only share link. */
+  readOnly?: boolean;
 }
 
-export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarProps) {
+export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly }: ToolbarProps) {
   const [copied, setCopied] = useState<"edit" | "view" | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [mintingView, setMintingView] = useState(false);
@@ -267,21 +269,25 @@ export default function Toolbar({ docId, sessionUser, onImportHtml }: ToolbarPro
         )}
       </div>
 
-      {/* 2. Import */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        className="hidden"
-        onChange={handleFileSelect}
-      />
-      <button
-        onClick={() => fileInputRef.current?.click()}
-        disabled={importing}
-        className="px-2.5 sm:px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors disabled:opacity-50 whitespace-nowrap shrink-0"
-      >
-        {importing ? "Importing..." : "Import"}
-      </button>
+      {/* 2. Import — only when the user can actually edit this doc. */}
+      {!readOnly && (
+        <>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            className="hidden"
+            onChange={handleFileSelect}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            className="px-2.5 sm:px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors disabled:opacity-50 whitespace-nowrap shrink-0"
+          >
+            {importing ? "Importing..." : "Import"}
+          </button>
+        </>
+      )}
 
       {/* 3. Connect AI */}
       <Link

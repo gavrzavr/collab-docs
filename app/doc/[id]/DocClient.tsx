@@ -101,7 +101,7 @@ export default function DocClient({ id, initialBlocks, shareToken, role }: DocCl
 
   return (
     <div className="flex flex-col h-screen">
-      <Toolbar docId={id} sessionUser={sessionUser} onImportHtml={handleImportHtml} />
+      <Toolbar docId={id} sessionUser={sessionUser} onImportHtml={handleImportHtml} readOnly={readOnly} />
       <div className="flex-1 flex overflow-hidden">
         <OutlinePanel
           editor={(synced ? editor : null) as never}
