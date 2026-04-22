@@ -35,6 +35,8 @@ function maskKey(key: string): string {
   return `${key.slice(0, 4)}…${key.slice(-4)}`;
 }
 
+type HelpTab = "web" | "desktop" | "code" | "other";
+
 export default function McpKeyPanel() {
   const [info, setInfo] = useState<KeyInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -42,6 +44,8 @@ export default function McpKeyPanel() {
   const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [helpTab, setHelpTab] = useState<HelpTab>("web");
 
   useEffect(() => {
     fetch("/api/v1/me/mcp-key", { cache: "no-store" })
@@ -157,7 +161,7 @@ export default function McpKeyPanel() {
       {info?.hasKey && fullUrl ? (
         <div className="space-y-2">
           <p className="text-sm text-gray-600">
-            Paste this URL into your Claude settings (Integrations → Add MCP server):
+            Your personal connection URL — paste it into any MCP client to give it access to your documents:
           </p>
           <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded px-2 py-1.5 font-mono text-xs break-all">
             <span className="flex-1 select-all">{revealed ? fullUrl : maskedUrl}</span>
@@ -179,6 +183,54 @@ export default function McpKeyPanel() {
             Created {fmtDate(info.createdAt)} · last used {fmtDate(info.lastUsedAt)}.
             Anyone with this key can read and edit every document you own or are invited to — treat it like a password.
           </p>
+
+          <div className="pt-2">
+            <button
+              onClick={() => setHelpOpen((v) => !v)}
+              className="text-sm text-gray-700 hover:text-black inline-flex items-center gap-1"
+              aria-expanded={helpOpen}
+            >
+              <span
+                className={`inline-block transition-transform ${helpOpen ? "rotate-90" : ""}`}
+                aria-hidden
+              >
+                ▸
+              </span>
+              How do I connect this?
+            </button>
+
+            {helpOpen && (
+              <div className="mt-3 border border-gray-200 rounded-lg overflow-hidden">
+                <div className="flex border-b border-gray-200 bg-gray-50 text-sm">
+                  {([
+                    ["web", "Claude.ai (web)"],
+                    ["desktop", "Claude desktop"],
+                    ["code", "Claude Code"],
+                    ["other", "Other MCP client"],
+                  ] as Array<[HelpTab, string]>).map(([id, label]) => (
+                    <button
+                      key={id}
+                      onClick={() => setHelpTab(id)}
+                      className={`px-3 py-2 border-r border-gray-200 last:border-r-0 transition-colors ${
+                        helpTab === id
+                          ? "bg-white text-gray-900 font-medium"
+                          : "text-gray-500 hover:text-gray-800"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="p-4 text-sm text-gray-700 bg-white">
+                  {helpTab === "web" && <HelpWeb />}
+                  {helpTab === "desktop" && <HelpDesktop />}
+                  {helpTab === "code" && <HelpCode fullUrl={fullUrl} />}
+                  {helpTab === "other" && <HelpOther />}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       ) : (
         <div className="text-sm text-gray-600">
@@ -186,5 +238,128 @@ export default function McpKeyPanel() {
         </div>
       )}
     </section>
+  );
+}
+
+// ─── Per-client instructions ──────────────────────────────────────────
+//
+// Kept verbose on purpose — target user has never connected an MCP
+// server before. Every step they'd ask about is called out inline.
+
+function StepList({ children }: { children: React.ReactNode }) {
+  return <ol className="list-decimal list-inside space-y-1.5">{children}</ol>;
+}
+
+function UrlHint() {
+  return (
+    <p className="text-xs text-gray-500 mt-3">
+      Use the Copy button above to grab the URL — it already includes your key.
+    </p>
+  );
+}
+
+function HelpWeb() {
+  return (
+    <div>
+      <StepList>
+        <li>
+          Go to{" "}
+          <a
+            href="https://claude.ai/settings/connectors"
+            target="_blank"
+            rel="noreferrer"
+            className="underline hover:text-black"
+          >
+            claude.ai → Settings → Connectors
+          </a>
+          .
+        </li>
+        <li>Click <b>Add custom connector</b>.</li>
+        <li>
+          Name it <code className="px-1 bg-gray-100 rounded">PostPaper</code> and paste the URL above into the server URL field.
+        </li>
+        <li>Click <b>Add</b>. No extra auth — the key is in the URL.</li>
+        <li>
+          Open any chat and check the tools menu: you should see <code className="px-1 bg-gray-100 rounded">read_document</code>, <code className="px-1 bg-gray-100 rounded">edit_document</code>, and a few others.
+        </li>
+      </StepList>
+      <UrlHint />
+    </div>
+  );
+}
+
+function HelpDesktop() {
+  return (
+    <div>
+      <StepList>
+        <li>Open the Claude desktop app.</li>
+        <li>
+          Go to <b>Settings → Connectors</b> (on macOS: <code className="px-1 bg-gray-100 rounded">Claude</code> menu → <b>Settings</b>; on Windows: menu button → <b>Settings</b>).
+        </li>
+        <li>Click <b>Add custom connector</b>.</li>
+        <li>
+          Name it <code className="px-1 bg-gray-100 rounded">PostPaper</code> and paste the URL above.
+        </li>
+        <li>Click <b>Add</b>, then restart the app if prompted.</li>
+      </StepList>
+      <p className="text-xs text-gray-500 mt-3">
+        Don&apos;t see &quot;Connectors&quot;? Make sure the desktop app is up to date — remote MCP support was added in late 2024.
+      </p>
+      <UrlHint />
+    </div>
+  );
+}
+
+function HelpCode({ fullUrl }: { fullUrl: string }) {
+  const cmd = `claude mcp add --transport http postpaper "${fullUrl}"`;
+  const [copied, setCopied] = useState(false);
+
+  async function copyCmd() {
+    try {
+      await navigator.clipboard.writeText(cmd);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // ignore
+    }
+  }
+
+  return (
+    <div>
+      <p className="mb-2">Run this once in your terminal:</p>
+      <div className="flex items-start gap-2 bg-gray-900 text-gray-100 rounded px-3 py-2 font-mono text-xs break-all">
+        <span className="flex-1 select-all">{cmd}</span>
+        <button
+          onClick={copyCmd}
+          className="shrink-0 px-2 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600 text-white"
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <p className="mt-3">
+        The tools become available the next time you start <code className="px-1 bg-gray-100 rounded">claude</code>. Check with <code className="px-1 bg-gray-100 rounded">/mcp</code> inside a session.
+      </p>
+      <p className="text-xs text-gray-500 mt-2">
+        To remove it later: <code className="px-1 bg-gray-100 rounded">claude mcp remove postpaper</code>.
+      </p>
+    </div>
+  );
+}
+
+function HelpOther() {
+  return (
+    <div>
+      <p className="mb-2">
+        Add a <b>remote HTTP MCP server</b> in your client, using the URL above as the endpoint.
+      </p>
+      <ul className="list-disc list-inside space-y-1 text-gray-600">
+        <li>Transport: <b>HTTP</b> (streamable HTTP, not stdio).</li>
+        <li>No auth header needed — the API key is the <code className="px-1 bg-gray-100 rounded">?key=</code> query parameter.</li>
+        <li>
+          Tools exposed: <code className="px-1 bg-gray-100 rounded">read_document</code>, <code className="px-1 bg-gray-100 rounded">edit_document</code>, <code className="px-1 bg-gray-100 rounded">insert_block</code>, <code className="px-1 bg-gray-100 rounded">update_block</code>, <code className="px-1 bg-gray-100 rounded">delete_block</code>, <code className="px-1 bg-gray-100 rounded">create_table</code>, <code className="px-1 bg-gray-100 rounded">list_pages</code>.
+        </li>
+      </ul>
+      <UrlHint />
+    </div>
   );
 }
