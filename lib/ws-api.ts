@@ -242,6 +242,10 @@ export async function revokeShareToken(token: string, ownerId: string): Promise<
 
 export interface McpKeyInfo {
   hasKey: boolean;
+  /** Plaintext key if one exists. Shown on the dashboard so the user can
+   *  re-copy it into additional MCP clients — this is our product call
+   *  over GitHub-PAT-style "show once". */
+  key: string | null;
   createdAt: string | null;
   lastUsedAt: string | null;
 }

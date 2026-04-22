@@ -9,6 +9,7 @@ const MCP_URL = "https://ws.postpaper.co/mcp";
 
 interface KeyInfo {
   hasKey: boolean;
+  key: string | null;
   createdAt: string | null;
   lastUsedAt: string | null;
 }
@@ -26,11 +27,19 @@ function fmtDate(iso: string | null): string {
   return d.toLocaleDateString();
 }
 
+// Short masked preview of the key so the default render doesn't leak
+// the full secret to anyone looking over the user's shoulder. Full key
+// is still one click away via the "Show" toggle.
+function maskKey(key: string): string {
+  if (key.length <= 10) return key;
+  return `${key.slice(0, 4)}…${key.slice(-4)}`;
+}
+
 export default function McpKeyPanel() {
   const [info, setInfo] = useState<KeyInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [plaintext, setPlaintext] = useState<string | null>(null);
+  const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,8 +58,9 @@ export default function McpKeyPanel() {
       const res = await fetch("/api/v1/me/mcp-key", { method: "POST" });
       if (!res.ok) throw new Error(`mint failed: ${res.status}`);
       const data = (await res.json()) as { key: string; createdAt: string };
-      setPlaintext(data.key);
-      setInfo({ hasKey: true, createdAt: data.createdAt, lastUsedAt: null });
+      setInfo({ hasKey: true, key: data.key, createdAt: data.createdAt, lastUsedAt: null });
+      // Reveal the new key immediately — the user just asked for one.
+      setRevealed(true);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -66,8 +76,8 @@ export default function McpKeyPanel() {
     try {
       const res = await fetch("/api/v1/me/mcp-key", { method: "DELETE" });
       if (!res.ok) throw new Error(`revoke failed: ${res.status}`);
-      setPlaintext(null);
-      setInfo({ hasKey: false, createdAt: null, lastUsedAt: null });
+      setInfo({ hasKey: false, key: null, createdAt: null, lastUsedAt: null });
+      setRevealed(false);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -76,9 +86,9 @@ export default function McpKeyPanel() {
   }
 
   async function copyUrl() {
-    if (!plaintext) return;
+    if (!info?.key) return;
     try {
-      await navigator.clipboard.writeText(`${MCP_URL}?key=${plaintext}`);
+      await navigator.clipboard.writeText(`${MCP_URL}?key=${info.key}`);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -93,6 +103,9 @@ export default function McpKeyPanel() {
       </section>
     );
   }
+
+  const fullUrl = info?.key ? `${MCP_URL}?key=${info.key}` : null;
+  const maskedUrl = info?.key ? `${MCP_URL}?key=${maskKey(info.key)}` : null;
 
   return (
     <section className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
@@ -111,6 +124,7 @@ export default function McpKeyPanel() {
                 onClick={handleMint}
                 disabled={busy}
                 className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+                title="Generate a new key; the old one stops working."
               >
                 {busy ? "…" : "Regenerate"}
               </button>
@@ -140,16 +154,20 @@ export default function McpKeyPanel() {
         </div>
       )}
 
-      {plaintext ? (
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm">
-          <p className="font-medium text-amber-900 mb-2">
-            Copy your key now — it will not be shown again.
-          </p>
-          <p className="text-gray-700 mb-2">
+      {info?.hasKey && fullUrl ? (
+        <div className="space-y-2">
+          <p className="text-sm text-gray-600">
             Paste this URL into your Claude settings (Integrations → Add MCP server):
           </p>
-          <div className="flex items-center gap-2 bg-white border border-amber-200 rounded px-2 py-1.5 font-mono text-xs break-all">
-            <span className="flex-1">{MCP_URL}?key={plaintext}</span>
+          <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded px-2 py-1.5 font-mono text-xs break-all">
+            <span className="flex-1 select-all">{revealed ? fullUrl : maskedUrl}</span>
+            <button
+              onClick={() => setRevealed((v) => !v)}
+              className="shrink-0 px-2 py-1 text-xs rounded border border-gray-300 bg-white hover:bg-gray-100"
+              title={revealed ? "Hide key" : "Show full key"}
+            >
+              {revealed ? "Hide" : "Show"}
+            </button>
             <button
               onClick={copyUrl}
               className="shrink-0 px-2 py-1 text-xs rounded bg-gray-900 text-white hover:bg-gray-700"
@@ -157,11 +175,10 @@ export default function McpKeyPanel() {
               {copied ? "Copied" : "Copy"}
             </button>
           </div>
-        </div>
-      ) : info?.hasKey ? (
-        <div className="text-sm text-gray-600">
-          Key active — created {fmtDate(info.createdAt)}, last used {fmtDate(info.lastUsedAt)}.
-          {" "}Regenerating replaces the existing key; any client still using the old one will need to be updated.
+          <p className="text-xs text-gray-400">
+            Created {fmtDate(info.createdAt)} · last used {fmtDate(info.lastUsedAt)}.
+            Anyone with this key can read and edit every document you own or are invited to — treat it like a password.
+          </p>
         </div>
       ) : (
         <div className="text-sm text-gray-600">

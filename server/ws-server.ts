@@ -88,18 +88,47 @@ db.exec(`
     PRIMARY KEY (doc_id, user_email)
   );
   CREATE INDEX IF NOT EXISTS idx_collaborators_user ON document_collaborators (user_email);
-  -- Per-user MCP API keys. One row per user; rotating replaces the hash.
-  -- We store SHA-256 of the key (like a password hash) so leaking the DB
-  -- doesn't leak usable keys. The plaintext is shown to the user once at
-  -- mint time and they paste it into their Claude/MCP client URL.
+  -- Per-user MCP API keys. One row per user; rotating replaces the key.
+  -- Stored in plaintext on purpose — the dashboard needs to show the key
+  -- whenever the user wants to copy it into a new MCP client. Trade-off
+  -- vs. hashing: a DB read leaks usable keys, but losing the key to
+  -- "show once" UX makes a one-key-per-user product painful. MVP threat
+  -- model, personal docs only — if we add financial / admin scopes we
+  -- should reconsider.
   CREATE TABLE IF NOT EXISTS mcp_keys (
     user_email TEXT PRIMARY KEY,
-    key_hash TEXT NOT NULL UNIQUE,
+    key TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_used_at TEXT
   );
-  CREATE INDEX IF NOT EXISTS idx_mcp_keys_hash ON mcp_keys (key_hash);
+  CREATE INDEX IF NOT EXISTS idx_mcp_keys_key ON mcp_keys (key);
 `);
+
+// ─── Migration: legacy hashed schema → plaintext schema ────────────
+//
+// Earlier iteration stored SHA-256 hashes in `key_hash`. If that column
+// still exists in the DB, drop the table and recreate it — any minted
+// keys under the old schema are unrecoverable (can't un-hash) and users
+// have to regenerate. Safe to run on every boot: no-op once migrated.
+{
+  const cols = db.prepare("PRAGMA table_info(mcp_keys)").all() as Array<{ name: string }>;
+  const hasHashCol = cols.some((c) => c.name === "key_hash");
+  const hasKeyCol = cols.some((c) => c.name === "key");
+  if (hasHashCol && !hasKeyCol) {
+    console.log("[migration] dropping legacy mcp_keys schema (hashed keys unrecoverable)");
+    db.exec(`
+      DROP INDEX IF EXISTS idx_mcp_keys_hash;
+      DROP TABLE mcp_keys;
+      CREATE TABLE mcp_keys (
+        user_email TEXT PRIMARY KEY,
+        key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_used_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_mcp_keys_key ON mcp_keys (key);
+    `);
+  }
+}
 
 // ─── Session auth (Next.js ↔ ws-server) ──────────────────────────────
 //
@@ -218,63 +247,69 @@ function addCollaborator(
 // ─── MCP API keys ────────────────────────────────────────────────────
 //
 // One key per user. The key is random 32 bytes, base64url-encoded (~43
-// chars), and we store only a SHA-256 hash. On every MCP request we
-// extract `?key=...` from the /mcp URL, hash it, and look up the owning
-// email. If found, that email authorizes per-doc ACL checks inside each
-// tool handler (via getDocAccess). Missing/invalid key → 401.
+// chars), stored in plaintext so the dashboard can display it on demand
+// (the user will need to paste it into each MCP client they connect).
+// On every /mcp request we extract `?key=...`, look it up directly, and
+// resolve the owning email. Missing/invalid key → no email → per-tool
+// authz returns "mint one".
 //
-// Rotation: just overwrite the row (ON CONFLICT). last_used_at is a
-// best-effort timestamp for "is this key still in use?" UI.
+// Rotation: overwrite the row (ON CONFLICT on user_email). last_used_at
+// is a best-effort timestamp for "is this key still in use?" UI.
 const upsertMcpKeyStmt = db.prepare(
-  `INSERT INTO mcp_keys (user_email, key_hash, created_at, last_used_at)
+  `INSERT INTO mcp_keys (user_email, key, created_at, last_used_at)
    VALUES (?, ?, datetime('now'), NULL)
    ON CONFLICT(user_email) DO UPDATE SET
-     key_hash = excluded.key_hash,
+     key = excluded.key,
      created_at = excluded.created_at,
      last_used_at = NULL`
 );
-const getMcpKeyByHashStmt = db.prepare(
-  "SELECT user_email, created_at, last_used_at FROM mcp_keys WHERE key_hash = ?"
+const getMcpKeyByKeyStmt = db.prepare(
+  "SELECT user_email, created_at, last_used_at FROM mcp_keys WHERE key = ?"
 );
 const getMcpKeyByEmailStmt = db.prepare(
-  "SELECT key_hash, created_at, last_used_at FROM mcp_keys WHERE user_email = ?"
+  "SELECT key, created_at, last_used_at FROM mcp_keys WHERE user_email = ?"
 );
 const deleteMcpKeyStmt = db.prepare(
   "DELETE FROM mcp_keys WHERE user_email = ?"
 );
 const touchMcpKeyStmt = db.prepare(
-  "UPDATE mcp_keys SET last_used_at = datetime('now') WHERE key_hash = ?"
+  "UPDATE mcp_keys SET last_used_at = datetime('now') WHERE key = ?"
 );
-
-function hashMcpKey(plaintext: string): string {
-  return crypto.createHash("sha256").update(plaintext).digest("hex");
-}
 
 function mintMcpKey(email: string): { key: string; createdAt: string } {
   // 32 random bytes, base64url (no padding) — roughly 43 chars.
   const raw = crypto.randomBytes(32);
   const key = raw.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  upsertMcpKeyStmt.run(email, hashMcpKey(key));
+  upsertMcpKeyStmt.run(email, key);
   return { key, createdAt: new Date().toISOString() };
 }
 
 function lookupMcpKey(plaintext: string): string | null {
-  const h = hashMcpKey(plaintext);
-  const row = getMcpKeyByHashStmt.get(h) as
+  const row = getMcpKeyByKeyStmt.get(plaintext) as
     | { user_email: string; created_at: string; last_used_at: string | null }
     | undefined;
   if (!row) return null;
   // Best-effort touch — failure must never reject the request.
-  try { touchMcpKeyStmt.run(h); } catch {}
+  try { touchMcpKeyStmt.run(plaintext); } catch {}
   return row.user_email;
 }
 
-function getMcpKeyInfo(email: string): { hasKey: boolean; createdAt: string | null; lastUsedAt: string | null } {
+function getMcpKeyInfo(email: string): {
+  hasKey: boolean;
+  key: string | null;
+  createdAt: string | null;
+  lastUsedAt: string | null;
+} {
   const row = getMcpKeyByEmailStmt.get(email) as
-    | { key_hash: string; created_at: string; last_used_at: string | null }
+    | { key: string; created_at: string; last_used_at: string | null }
     | undefined;
-  if (!row) return { hasKey: false, createdAt: null, lastUsedAt: null };
-  return { hasKey: true, createdAt: row.created_at, lastUsedAt: row.last_used_at };
+  if (!row) return { hasKey: false, key: null, createdAt: null, lastUsedAt: null };
+  return {
+    hasKey: true,
+    key: row.key,
+    createdAt: row.created_at,
+    lastUsedAt: row.last_used_at,
+  };
 }
 
 function revokeMcpKey(email: string): boolean {
