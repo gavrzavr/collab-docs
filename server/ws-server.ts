@@ -36,6 +36,29 @@ if (!fs.existsSync(dir)) {
 
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
+
+// ─── Migration: legacy hashed mcp_keys → plaintext mcp_keys ────────
+//
+// MUST run BEFORE the main schema block. The main block tries to
+// create `idx_mcp_keys_key ON mcp_keys (key)` which would fail with
+// SQLITE_ERROR on a DB whose mcp_keys table still has the old
+// `key_hash` column. So: detect the legacy layout and drop the table
+// first. Old hashed keys are unrecoverable — users regenerate once.
+{
+  const cols = db.prepare("PRAGMA table_info(mcp_keys)").all() as Array<{ name: string }>;
+  if (cols.length > 0) {
+    const hasHashCol = cols.some((c) => c.name === "key_hash");
+    const hasKeyCol = cols.some((c) => c.name === "key");
+    if (hasHashCol && !hasKeyCol) {
+      console.log("[migration] dropping legacy mcp_keys schema (hashed keys unrecoverable)");
+      db.exec(`
+        DROP INDEX IF EXISTS idx_mcp_keys_hash;
+        DROP TABLE mcp_keys;
+      `);
+    }
+  }
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS yjs_documents (
     doc_id TEXT PRIMARY KEY,
@@ -103,32 +126,6 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_mcp_keys_key ON mcp_keys (key);
 `);
-
-// ─── Migration: legacy hashed schema → plaintext schema ────────────
-//
-// Earlier iteration stored SHA-256 hashes in `key_hash`. If that column
-// still exists in the DB, drop the table and recreate it — any minted
-// keys under the old schema are unrecoverable (can't un-hash) and users
-// have to regenerate. Safe to run on every boot: no-op once migrated.
-{
-  const cols = db.prepare("PRAGMA table_info(mcp_keys)").all() as Array<{ name: string }>;
-  const hasHashCol = cols.some((c) => c.name === "key_hash");
-  const hasKeyCol = cols.some((c) => c.name === "key");
-  if (hasHashCol && !hasKeyCol) {
-    console.log("[migration] dropping legacy mcp_keys schema (hashed keys unrecoverable)");
-    db.exec(`
-      DROP INDEX IF EXISTS idx_mcp_keys_hash;
-      DROP TABLE mcp_keys;
-      CREATE TABLE mcp_keys (
-        user_email TEXT PRIMARY KEY,
-        key TEXT NOT NULL UNIQUE,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        last_used_at TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_mcp_keys_key ON mcp_keys (key);
-    `);
-  }
-}
 
 // ─── Session auth (Next.js ↔ ws-server) ──────────────────────────────
 //
