@@ -1028,6 +1028,116 @@ function insertTableAfter(ydoc: Y.Doc, afterBlockId: string, rows: string[][], f
   return newId;
 }
 
+// ─── htmlViz block (Claude-generated interactive visualizations) ─────
+//
+// Stored as a blockContainer > <htmlViz> element with the raw HTML in the
+// `html` attribute (so it travels through y-prosemirror's attribute path
+// unchanged). The client component renders it in a sandboxed iframe.
+//
+// Hard 100 KB size cap enforced at the MCP tool layer — anything larger
+// is almost certainly a bundled library that would be faster and safer
+// to pre-render or link out to.
+const HTML_VIZ_MAX_BYTES = 100_000;
+
+function createHtmlVizBlock(
+  html: string,
+  createdBy: string,
+): { element: Y.XmlElement; id: string } {
+  const container = new Y.XmlElement("blockContainer");
+  const id = generateBlockId();
+  container.setAttribute("id", id);
+
+  const viz = new Y.XmlElement("htmlViz");
+  viz.setAttribute("html", html);
+  viz.setAttribute("createdAt", new Date().toISOString());
+  viz.setAttribute("createdBy", createdBy || "");
+
+  container.insert(0, [viz]);
+  return { element: container, id };
+}
+
+/** Append an htmlViz block to the end of one page fragment. */
+function appendHtmlViz(
+  ydoc: Y.Doc,
+  html: string,
+  createdBy: string,
+  fragmentName: string = "blocknote",
+): string {
+  const fragment = ydoc.getXmlFragment(fragmentName);
+  const { element: block, id: blockId } = createHtmlVizBlock(html, createdBy);
+
+  ydoc.transact(() => {
+    let blockGroup: Y.XmlElement | null = null;
+    for (let i = 0; i < fragment.length; i++) {
+      const child = fragment.get(i);
+      if (child instanceof Y.XmlElement && child.nodeName === "blockGroup") {
+        blockGroup = child;
+        break;
+      }
+    }
+    if (!blockGroup) {
+      blockGroup = new Y.XmlElement("blockGroup");
+      fragment.insert(0, [blockGroup]);
+    }
+    blockGroup.insert(blockGroup.length, [block]);
+  });
+
+  return blockId;
+}
+
+/** Insert an htmlViz block after a specific block (within one page fragment). */
+function insertHtmlVizAfter(
+  ydoc: Y.Doc,
+  afterBlockId: string,
+  html: string,
+  createdBy: string,
+  fragmentName: string = "blocknote",
+): string | null {
+  const fragment = ydoc.getXmlFragment(fragmentName);
+  const found = findBlockContainer(fragment, afterBlockId);
+  if (!found) return null;
+
+  const { element: block, id: newId } = createHtmlVizBlock(html, createdBy);
+
+  ydoc.transact(() => {
+    found.parent.insert(found.index + 1, [block]);
+  });
+
+  return newId;
+}
+
+/** Replace the HTML of an existing htmlViz block in place.
+ *  Returns false if the block wasn't found or wasn't an htmlViz block. */
+function updateHtmlVizContent(
+  ydoc: Y.Doc,
+  blockId: string,
+  html: string,
+  fragmentName: string = "blocknote",
+): { ok: true } | { ok: false; reason: "not_found" | "wrong_type" } {
+  const fragment = ydoc.getXmlFragment(fragmentName);
+  const found = findBlockContainer(fragment, blockId);
+  if (!found) return { ok: false, reason: "not_found" };
+
+  // Find the existing <htmlViz> child. We only update; we don't convert
+  // other block types into htmlViz — if you want that, delete + insert.
+  let vizEl: Y.XmlElement | null = null;
+  for (let i = 0; i < found.container.length; i++) {
+    const child = found.container.get(i);
+    if (child instanceof Y.XmlElement && child.nodeName === "htmlViz") {
+      vizEl = child;
+      break;
+    }
+  }
+  if (!vizEl) return { ok: false, reason: "wrong_type" };
+
+  ydoc.transact(() => {
+    vizEl!.setAttribute("html", html);
+    // Bump the timestamp so the badge reflects the most recent edit.
+    vizEl!.setAttribute("createdAt", new Date().toISOString());
+  });
+  return { ok: true };
+}
+
 /** Dump XML structure for debugging */
 function dumpXml(element: Y.XmlElement | Y.XmlText | Y.XmlFragment, indent = 0): string {
   const pad = "  ".repeat(indent);
@@ -1396,7 +1506,7 @@ function createMcpServer(userEmail: string | null = null): McpServer {
         // also be blocked below — we tell the model up front to avoid wasted calls.
         const accessNote = viaShareToken
           ? (role === "viewer"
-              ? `\n\n[ACCESS: view-only share link] You can read this document but CANNOT edit it. Do not attempt update_block / insert_block / delete_block / edit_document / create_table / create_page / rename_page — they will be rejected. If the user asks for edits, tell them to share the canonical /doc/:id URL (not /v/:token) or to issue an editor share link.`
+              ? `\n\n[ACCESS: view-only share link] You can read this document but CANNOT edit it. Do not attempt update_block / insert_block / delete_block / edit_document / create_table / create_html_block / update_html_block / create_page / rename_page — they will be rejected. If the user asks for edits, tell them to share the canonical /doc/:id URL (not /v/:token) or to issue an editor share link.`
               : `\n\n[ACCESS: ${role} share link] You opened this document via a share token granting ${role} access.`)
           : "";
 
@@ -1414,13 +1524,16 @@ function createMcpServer(userEmail: string | null = null): McpServer {
             : b.type === "bulletListItem" ? "- "
             : b.type === "numberedListItem" ? "1. "
             : "";
-          return `[${b.id}] ${prefix}${b.text}`;
+          // Tag interactive blocks explicitly so Claude knows to use
+          // update_html_block (not update_block) when iterating on them.
+          const typeTag = b.type === "htmlViz" ? " [htmlViz]" : "";
+          return `[${b.id}]${typeTag} ${prefix}${b.text}`;
         });
 
         return {
           content: [{
             type: "text" as const,
-            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}) — page "${targetPage.title}" (${blocks.length} blocks):\n\n${lines.join("\n")}${pageSummary}${accessNote}\n\n--- HOW TO EDIT ---\nThink in blocks, not pages within a page. Each line above is one addressable block with a stable ID.\n- Change one block: update_block(block_id, text)\n- Add between blocks: insert_block(after_block_id, text)\n- Remove a block: delete_block(block_id)\n- Append at the end: edit_document(mode="append")\n- Tables: create_table(rows)\nAll write tools accept an optional "page" argument — pass the same page id or title you used here to keep edits on this tab. NEVER use edit_document(mode="replace") unless the user explicitly asks to rewrite.\n\nMULTIPLE PAGES: Use pages (tabs) to separate genuinely distinct sections — e.g. "API reference", "Changelog", "Roadmap" — when each would otherwise be a very long document section. Do NOT split a single flowing narrative across pages. Create a new page with create_page, then target it with edit_document(page=...).\n\nPRESERVE COLLABORATORS' WORK: do not touch blocks unrelated to the task, even if you think they could be improved. One logical change per operation.\n\nFORMATTING: most blocks should be paragraphs (no prefix). Use "- " only for 3+ short parallel items; headings only for section titles; bold only on key terms. Inline: **bold**, *italic*, \`code\`, ~~strike~~, __underline__, [text](url).\n\nCOLORS: supported via text_color / background_color on update_block and insert_block. Palette: default, gray, brown, red, orange, yellow, green, blue, purple, pink. Use at most 1–2 accent colors per document, with consistent semantics (red=warning, green=success, blue=info, yellow bg=highlight).`,
+            text: `Document "${extractTitle(entry.ydoc)}" (ID: ${docId}) — page "${targetPage.title}" (${blocks.length} blocks):\n\n${lines.join("\n")}${pageSummary}${accessNote}\n\n--- HOW TO EDIT ---\nThink in blocks, not pages within a page. Each line above is one addressable block with a stable ID.\n- Change one block: update_block(block_id, text)\n- Add between blocks: insert_block(after_block_id, text)\n- Remove a block: delete_block(block_id) — works on every block type including tables and interactive blocks\n- Append at the end: edit_document(mode="append")\n- Tables: create_table(rows)\n- Interactive (HTML) blocks: create_html_block(html) for charts/dashboards/visualizations; update_html_block(block_id, html) to iterate on one. Blocks marked [htmlViz] in the listing above CANNOT be edited with update_block — use update_html_block instead.\nAll write tools accept an optional "page" argument — pass the same page id or title you used here to keep edits on this tab. NEVER use edit_document(mode="replace") unless the user explicitly asks to rewrite.\n\nMULTIPLE PAGES: Use pages (tabs) to separate genuinely distinct sections — e.g. "API reference", "Changelog", "Roadmap" — when each would otherwise be a very long document section. Do NOT split a single flowing narrative across pages. Create a new page with create_page, then target it with edit_document(page=...).\n\nPRESERVE COLLABORATORS' WORK: do not touch blocks unrelated to the task, even if you think they could be improved. One logical change per operation.\n\nFORMATTING: most blocks should be paragraphs (no prefix). Use "- " only for 3+ short parallel items; headings only for section titles; bold only on key terms. Inline: **bold**, *italic*, \`code\`, ~~strike~~, __underline__, [text](url).\n\nCOLORS: supported via text_color / background_color on update_block and insert_block. Palette: default, gray, brown, red, orange, yellow, green, blue, purple, pink. Use at most 1–2 accent colors per document, with consistent semantics (red=warning, green=success, blue=info, yellow bg=highlight).`,
           }],
         };
       } catch (e) {
@@ -1501,11 +1614,23 @@ function createMcpServer(userEmail: string | null = null): McpServer {
 
         // If no type specified, detect current type
         let type = block_type;
-        if (!type) {
+        {
           const blocks = extractBlocksWithIds(entry.ydoc, targetPage.id);
           const current = blocks.find(b => b.id === block_id);
-          type = current?.type || "paragraph";
-          if (!level && current?.level) level = current.level;
+          // Refuse to overwrite interactive (htmlViz) blocks with plain text —
+          // a blind update_block would destroy the HTML payload. Route the
+          // caller to the correct tool. Block_type override is also rejected
+          // so a caller can't accidentally convert a viz into a paragraph.
+          if (current?.type === "htmlViz") {
+            return mcpError(
+              "invalid_input",
+              `Block "${block_id}" is an interactive (HTML) block. Use update_html_block to change its content, or delete_block + create a replacement. update_block only works on text blocks (paragraph, heading, bulletListItem, numberedListItem, checkListItem, quote).`,
+            );
+          }
+          if (!type) {
+            type = current?.type || "paragraph";
+            if (!level && current?.level) level = current.level;
+          }
         }
 
         const style: BlockStyle = {};
@@ -1643,6 +1768,125 @@ function createMcpServer(userEmail: string | null = null): McpServer {
           content: [{
             type: "text" as const,
             text: `Created table (${rows.length} rows × ${rows[0].length} cols) with ID ${tableId} on page "${targetPage.title}". View: ${VERCEL_URL}/doc/${docId}${targetPage.id === FIRST_PAGE_ID ? "" : `#${targetPage.id}`}`,
+          }],
+        };
+      } catch (e) {
+        return mcpErrorFromException(e);
+      }
+    }
+  );
+
+  mcp.tool(
+    "create_html_block",
+    `Insert an "interactive block" — a self-contained HTML fragment rendered in a sandboxed iframe. Use this for data visualizations the user would otherwise have to describe in words: charts, dashboards, workout diagrams, timelines, comparison widgets, SVG/Canvas illustrations with hover interactions, small calculators.
+
+Guidelines:
+- Return a complete HTML fragment (no <html>/<body> wrapper — the server wraps it). Inline <style> and <script> are allowed.
+- The iframe has NO network access and NO access to the parent page (sandbox="allow-scripts" without allow-same-origin). All data, CSS, and libraries must be inlined. Do not link external scripts or stylesheets — they will fail silently.
+- Prefer pure SVG, Canvas, or vanilla JS. Large libraries blow the 100 KB size cap.
+- Keep total HTML under 100 KB. The tool rejects anything larger.
+- Do not include untrusted or user-supplied HTML — the block runs in the reader's browser.
+- For plain tabular data use create_table. For textual content use edit_document / insert_block. This tool is for visuals only.
+
+Pass after_block_id to place the block precisely; omit to append at the end. Multi-page docs: pass the same 'page' argument you used with read_document.`,
+    {
+      doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
+      html: z.string().describe("Complete HTML fragment (no html/body wrapper). Inline <style> and <script> allowed. No network requests, no external resources."),
+      after_block_id: z.string().optional().describe("Insert the block after this block ID. If omitted, appends to end of the page."),
+      page: z.string().optional().describe("Optional page ID or title. Omit to target the first page."),
+    },
+    async ({ doc_url, html, after_block_id, page }) => {
+      let ctx: DocUrlContext;
+      try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const authz = authorizeMcpCall(ctx, userEmail, "write");
+      if (!authz.ok) return authz.error;
+      const { docId } = ctx;
+      const bytes = Buffer.byteLength(html ?? "", "utf8");
+      logEvent("mcp.create_html_block", docId, { bytes, page: page ?? null });
+      try {
+        if (!html || !html.trim()) {
+          return mcpError("invalid_input", "html must be a non-empty HTML fragment.");
+        }
+        if (bytes > HTML_VIZ_MAX_BYTES) {
+          return mcpError(
+            "invalid_input",
+            `html is ${bytes.toLocaleString()} bytes; limit is ${HTML_VIZ_MAX_BYTES.toLocaleString()}. Simplify the visualization (fewer data points, smaller inline libraries) or split into multiple blocks.`,
+          );
+        }
+        const got = getDocStrictForMcp(docId);
+        if (!got.ok) return got.error;
+        const entry = got.entry;
+        const resolved = resolvePageForMcp(entry.ydoc, page);
+        if (!resolved.ok) return resolved.error;
+        const { page: targetPage } = resolved;
+        let blockId: string | null;
+        if (after_block_id) {
+          blockId = insertHtmlVizAfter(entry.ydoc, after_block_id, html, userEmail, targetPage.id);
+          if (!blockId) {
+            return mcpError("not_found", `Block "${after_block_id}" not found on page "${targetPage.title}". Use read_document (with the same page) to get current block IDs.`);
+          }
+        } else {
+          blockId = appendHtmlViz(entry.ydoc, html, userEmail, targetPage.id);
+        }
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Created interactive block (${bytes.toLocaleString()} bytes) with ID ${blockId} on page "${targetPage.title}". View: ${VERCEL_URL}/doc/${docId}${targetPage.id === FIRST_PAGE_ID ? "" : `#${targetPage.id}`}`,
+          }],
+        };
+      } catch (e) {
+        return mcpErrorFromException(e);
+      }
+    }
+  );
+
+  mcp.tool(
+    "update_html_block",
+    "Replace the HTML content of an existing interactive block (created by create_html_block), preserving its block ID. Use this to iterate on a visualization — fixing a bug, adjusting styling, adding data points — without disturbing the surrounding document. Only accepts blocks that are already interactive blocks; to convert another block type, delete_block + create_html_block instead. Same 100 KB limit and sandbox rules as create_html_block.",
+    {
+      doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
+      block_id: z.string().describe("The interactive block's ID (from read_document output)."),
+      html: z.string().describe("New complete HTML fragment (no html/body wrapper). Same rules as create_html_block."),
+      page: z.string().optional().describe("Optional page ID or title the block lives on. Omit to target the first page."),
+    },
+    async ({ doc_url, block_id, html, page }) => {
+      let ctx: DocUrlContext;
+      try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const authz = authorizeMcpCall(ctx, userEmail, "write");
+      if (!authz.ok) return authz.error;
+      const { docId } = ctx;
+      const bytes = Buffer.byteLength(html ?? "", "utf8");
+      logEvent("mcp.update_html_block", docId, { block_id, bytes, page: page ?? null });
+      try {
+        if (!html || !html.trim()) {
+          return mcpError("invalid_input", "html must be a non-empty HTML fragment.");
+        }
+        if (bytes > HTML_VIZ_MAX_BYTES) {
+          return mcpError(
+            "invalid_input",
+            `html is ${bytes.toLocaleString()} bytes; limit is ${HTML_VIZ_MAX_BYTES.toLocaleString()}. Simplify the visualization or split it.`,
+          );
+        }
+        const got = getDocStrictForMcp(docId);
+        if (!got.ok) return got.error;
+        const entry = got.entry;
+        const resolved = resolvePageForMcp(entry.ydoc, page);
+        if (!resolved.ok) return resolved.error;
+        const { page: targetPage } = resolved;
+        const res = updateHtmlVizContent(entry.ydoc, block_id, html, targetPage.id);
+        if (!res.ok) {
+          if (res.reason === "not_found") {
+            return mcpError("not_found", `Block "${block_id}" not found on page "${targetPage.title}". Use read_document to get current IDs.`);
+          }
+          return mcpError(
+            "invalid_input",
+            `Block "${block_id}" is not an interactive block. Use update_block for text blocks, or delete_block + create_html_block to replace it.`,
+          );
+        }
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Updated interactive block ${block_id} (${bytes.toLocaleString()} bytes) on page "${targetPage.title}". View: ${VERCEL_URL}/doc/${docId}${targetPage.id === FIRST_PAGE_ID ? "" : `#${targetPage.id}`}`,
           }],
         };
       } catch (e) {
@@ -1873,9 +2117,9 @@ Document URLs come in two shapes:
 - **/doc/:id** — canonical URL. Full editor access. Example: https://postpaper.co/doc/abc123.
 - **/v/:token** — read-only share link. You can read the document but all
   write tools (update_block, insert_block, delete_block, edit_document,
-  create_table, create_page, rename_page) will reject your call with a
-  clear error. If the user pastes a /v/ URL and asks for edits, tell them
-  it is view-only and ask for the canonical /doc/:id URL.
+  create_table, create_html_block, update_html_block, create_page, rename_page)
+  will reject your call with a clear error. If the user pastes a /v/ URL and
+  asks for edits, tell them it is view-only and ask for the canonical /doc/:id URL.
 
 Never silently "interpret" a /v/:token path segment as a document ID — pass
 the whole URL to the tool and let it resolve. If the share token is unknown,
@@ -1922,6 +2166,56 @@ id or title to target it.
 - 1.            → numbered list item
 - - [ ] / - [x] → unchecked / checked task
 For tables use the create_table tool (2D array; first row is the header).
+For interactive visualizations (charts, dashboards, workout diagrams, SVG
+illustrations with hover state, small calculators) use create_html_block.
+See the "Interactive blocks" section below for the full lifecycle.
+
+## Interactive (HTML) blocks — live visualizations you generate
+A PostPaper document can host sandboxed HTML fragments you author in response
+to user asks like "draw me a chart of X", "visualize this workout", or "make
+a dashboard of these numbers". Use them when words or a table wouldn't do the
+data justice — charts, workout-power diagrams, timelines, interactive SVG
+widgets, small calculators.
+
+### Lifecycle
+- **Create** — create_html_block(html, [after_block_id], [page]). Omit
+  after_block_id to append. The tool returns the new block ID.
+- **See** — read_document lists interactive blocks with a "[htmlViz]" tag
+  after the ID, plus a size hint like "[Interactive block, 12,480 bytes HTML]".
+  The raw HTML is NOT returned (it would flood the context); if you need to
+  iterate, keep a copy of what you generated, or regenerate from scratch.
+- **Edit** — update_html_block(block_id, html) replaces the HTML in place,
+  preserving the block ID and position. update_block will REJECT htmlViz
+  blocks — do not try to "fix typos" with it; regenerate the whole fragment
+  via update_html_block instead.
+- **Delete** — delete_block(block_id). The block ID is the same one shown
+  in read_document output. No dedicated "delete_html_block" exists; the
+  normal delete tool works on every block type.
+- **Move** — delete_block + create_html_block with after_block_id. There
+  is no in-place move operation.
+
+### HTML rules (the sandbox is strict)
+- The HTML runs in an iframe with sandbox="allow-scripts" and NO
+  allow-same-origin. It cannot reach the network, parent page, cookies,
+  or localStorage. Any <script src="…"> or <link href="…"> to an external
+  URL will fail silently.
+- Inline <style> and <script> are allowed and encouraged.
+- Don't load external libraries (no CDN Chart.js, D3, React). Use vanilla
+  JS + SVG or Canvas. Data must be baked into the fragment.
+- Fragment only — no <html>/<body> wrapper (the server adds it with CSP).
+- 100 KB hard size cap. If your generation is over, simplify: fewer data
+  points, no embedded images (use SVG shapes instead), no whole libraries.
+- Keep it semantically self-describing (<title>, ARIA labels) because
+  exports and non-interactive readers see only "[Interactive block]".
+
+### When NOT to use create_html_block
+- Plain tabular data → create_table.
+- Textual content, lists, code → edit_document / insert_block.
+- Static images users upload → (not yet supported; tell the user).
+- Anything that'd duplicate content already in surrounding blocks.
+
+One interactive block per distinct visualization. Don't create a block to
+"demo" something trivial a paragraph could say.
 
 ## Inline formatting (within any block text)
 **bold**   *italic*   \`code\`   ~~strike~~   __underline__   [label](url)
@@ -1948,6 +2242,10 @@ Color semantics (stay consistent; 1–2 accent colors per document max):
 5. Use edit_document(mode="append") to add new content at the end of a page.
 6. edit_document(mode="replace") is a last resort — only when explicitly asked to rewrite.
 7. Use create_table for genuinely tabular data (not as a replacement for lists).
+8. Use create_html_block for data visualizations that a paragraph or table
+   would underserve (charts, diagrams, hover-tooltip widgets). Follow the
+   sandbox rules in the "Interactive blocks" section — no network, no
+   external libraries, 100 KB cap. Iterate via update_html_block.
 
 # HARD NO
 - Do not make every line a bullet. This is the #1 mistake.

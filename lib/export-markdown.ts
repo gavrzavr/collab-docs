@@ -23,6 +23,12 @@ export function blocksToMarkdown(blocks: Block[], indent = ""): string {
       case "numberedListItem":
         lines.push(`${indent}1. ${block.text}`);
         break;
+      case "htmlViz":
+        // Interactive blocks are live JS visualizations; markdown can't
+        // represent them. Leave a clear placeholder so downstream readers
+        // know something was here.
+        lines.push(`${indent}_[Interactive block — view in PostPaper]_`);
+        break;
       case "paragraph":
       default:
         lines.push(`${indent}${block.text}`);

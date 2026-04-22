@@ -11,6 +11,8 @@ import * as Y from "yjs";
 import type { WebsocketProvider } from "y-websocket";
 import { useEffect, useMemo } from "react";
 
+import { editorSchema } from "./blocknote-schema";
+
 interface EditorProps {
   /** The shared Y.Doc for this document. Owned by the parent (DocClient) so
    *  that tab switches don't tear down the WebSocket connection. */
@@ -85,6 +87,7 @@ export default function Editor({ ydoc, provider, fragmentName, userName, userCol
   const fragment = useMemo(() => ydoc.getXmlFragment(fragmentName), [ydoc, fragmentName]);
 
   const editor = useCreateBlockNote({
+    schema: editorSchema,
     collaboration: {
       provider,
       fragment,

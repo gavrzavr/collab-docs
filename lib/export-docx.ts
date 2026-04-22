@@ -39,6 +39,14 @@ function blockToParagraph(block: Block): Paragraph {
         numbering: { reference: "default-numbering", level: 0 },
         children: [new TextRun(block.text)],
       });
+    case "htmlViz":
+      // Live JS visualizations can't round-trip to .docx. Emit a
+      // placeholder (italic, grey-tinted by the reader) so the exported
+      // file still makes sense offline.
+      return new Paragraph({
+        alignment: AlignmentType.LEFT,
+        children: [new TextRun({ text: "[Interactive block — view in PostPaper]", italics: true })],
+      });
     case "paragraph":
     default:
       return new Paragraph({

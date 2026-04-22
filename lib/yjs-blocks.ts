@@ -112,6 +112,20 @@ export function extractBlocks(ydoc: Y.Doc, fragmentName: string = "blocknote"): 
           walkBlockGroup(child);
         } else if (child.nodeName === "table") {
           blocks.push({ id, type: "table", text: tableToMarkdown(child, "(empty table)") });
+        } else if (child.nodeName === "htmlViz") {
+          // Custom Claude-generated visualization block. The actual HTML
+          // lives in an attribute; we surface a placeholder in the text
+          // so read_document output stays useful (and so Claude knows the
+          // block exists without us dumping the iframe payload).
+          const html = child.getAttribute("html") || "";
+          const size = html.length;
+          blocks.push({
+            id,
+            type: "htmlViz",
+            text: size
+              ? `[Interactive block, ${size.toLocaleString()} bytes HTML]`
+              : "[Interactive block, empty]",
+          });
         } else {
           const type = child.nodeName;
           const level = type === "heading"
