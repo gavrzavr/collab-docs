@@ -232,6 +232,64 @@ export async function revokeShareToken(token: string, ownerId: string): Promise<
   }
 }
 
+// ─── MCP API keys ────────────────────────────────────────────────────
+//
+// Per-user bearer credential for the PostPaper MCP server. The Next.js
+// layer authenticates the user via NextAuth and forwards the verified
+// email; ws-server additionally requires INTERNAL_SECRET because
+// minting a key for anyone else's email would be a straight-up
+// account-takeover vector.
+
+export interface McpKeyInfo {
+  hasKey: boolean;
+  createdAt: string | null;
+  lastUsedAt: string | null;
+}
+
+function mcpKeyHeaders(): Record<string, string> {
+  const h: Record<string, string> = { "Content-Type": "application/json" };
+  if (process.env.INTERNAL_SECRET) {
+    h["x-internal-secret"] = process.env.INTERNAL_SECRET;
+  }
+  return h;
+}
+
+/** Mint (or rotate) an MCP API key for `email`. Returns the plaintext
+ *  key once — it's unrecoverable afterwards. */
+export async function mintMcpKey(
+  email: string
+): Promise<{ key: string; createdAt: string }> {
+  const res = await fetch(`${WS_API_URL}/api/me/mcp-key`, {
+    method: "POST",
+    headers: mcpKeyHeaders(),
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) throw new Error(`mintMcpKey failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+/** Look up whether `email` currently has a key (no plaintext). */
+export async function getMcpKeyInfo(email: string): Promise<McpKeyInfo> {
+  const res = await fetch(
+    `${WS_API_URL}/api/me/mcp-key?email=${encodeURIComponent(email)}`,
+    { method: "GET", headers: mcpKeyHeaders(), cache: "no-store" }
+  );
+  if (!res.ok) throw new Error(`getMcpKeyInfo failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+/** Revoke `email`'s key. Idempotent — returns { revoked: false } when
+ *  there was no key to begin with. */
+export async function revokeMcpKey(email: string): Promise<{ revoked: boolean }> {
+  const res = await fetch(`${WS_API_URL}/api/me/mcp-key`, {
+    method: "DELETE",
+    headers: mcpKeyHeaders(),
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) throw new Error(`revokeMcpKey failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
 export async function fetchAdminStats(days: number = 30): Promise<AdminStats> {
   const res = await fetch(`${WS_API_URL}/api/stats?days=${days}`, {
     // Never cache stats — always want a fresh number.

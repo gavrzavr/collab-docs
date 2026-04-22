@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import McpKeyPanel from "@/components/McpKeyPanel";
 
 interface DocMeta {
   id: string;
@@ -118,6 +119,7 @@ export default function DashboardPage() {
 
       {/* Main content */}
       <main className="max-w-4xl mx-auto px-6 py-10">
+        {user && <McpKeyPanel />}
         {loading ? (
           <div className="text-center text-gray-400 py-20">Loading documents...</div>
         ) : docs.length === 0 ? (

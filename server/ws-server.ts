@@ -88,6 +88,17 @@ db.exec(`
     PRIMARY KEY (doc_id, user_email)
   );
   CREATE INDEX IF NOT EXISTS idx_collaborators_user ON document_collaborators (user_email);
+  -- Per-user MCP API keys. One row per user; rotating replaces the hash.
+  -- We store SHA-256 of the key (like a password hash) so leaking the DB
+  -- doesn't leak usable keys. The plaintext is shown to the user once at
+  -- mint time and they paste it into their Claude/MCP client URL.
+  CREATE TABLE IF NOT EXISTS mcp_keys (
+    user_email TEXT PRIMARY KEY,
+    key_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_mcp_keys_hash ON mcp_keys (key_hash);
 `);
 
 // ─── Session auth (Next.js ↔ ws-server) ──────────────────────────────
@@ -202,6 +213,73 @@ function addCollaborator(
   viaToken: string | null
 ): void {
   upsertCollaboratorStmt.run(docId, email, role, viaToken);
+}
+
+// ─── MCP API keys ────────────────────────────────────────────────────
+//
+// One key per user. The key is random 32 bytes, base64url-encoded (~43
+// chars), and we store only a SHA-256 hash. On every MCP request we
+// extract `?key=...` from the /mcp URL, hash it, and look up the owning
+// email. If found, that email authorizes per-doc ACL checks inside each
+// tool handler (via getDocAccess). Missing/invalid key → 401.
+//
+// Rotation: just overwrite the row (ON CONFLICT). last_used_at is a
+// best-effort timestamp for "is this key still in use?" UI.
+const upsertMcpKeyStmt = db.prepare(
+  `INSERT INTO mcp_keys (user_email, key_hash, created_at, last_used_at)
+   VALUES (?, ?, datetime('now'), NULL)
+   ON CONFLICT(user_email) DO UPDATE SET
+     key_hash = excluded.key_hash,
+     created_at = excluded.created_at,
+     last_used_at = NULL`
+);
+const getMcpKeyByHashStmt = db.prepare(
+  "SELECT user_email, created_at, last_used_at FROM mcp_keys WHERE key_hash = ?"
+);
+const getMcpKeyByEmailStmt = db.prepare(
+  "SELECT key_hash, created_at, last_used_at FROM mcp_keys WHERE user_email = ?"
+);
+const deleteMcpKeyStmt = db.prepare(
+  "DELETE FROM mcp_keys WHERE user_email = ?"
+);
+const touchMcpKeyStmt = db.prepare(
+  "UPDATE mcp_keys SET last_used_at = datetime('now') WHERE key_hash = ?"
+);
+
+function hashMcpKey(plaintext: string): string {
+  return crypto.createHash("sha256").update(plaintext).digest("hex");
+}
+
+function mintMcpKey(email: string): { key: string; createdAt: string } {
+  // 32 random bytes, base64url (no padding) — roughly 43 chars.
+  const raw = crypto.randomBytes(32);
+  const key = raw.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  upsertMcpKeyStmt.run(email, hashMcpKey(key));
+  return { key, createdAt: new Date().toISOString() };
+}
+
+function lookupMcpKey(plaintext: string): string | null {
+  const h = hashMcpKey(plaintext);
+  const row = getMcpKeyByHashStmt.get(h) as
+    | { user_email: string; created_at: string; last_used_at: string | null }
+    | undefined;
+  if (!row) return null;
+  // Best-effort touch — failure must never reject the request.
+  try { touchMcpKeyStmt.run(h); } catch {}
+  return row.user_email;
+}
+
+function getMcpKeyInfo(email: string): { hasKey: boolean; createdAt: string | null; lastUsedAt: string | null } {
+  const row = getMcpKeyByEmailStmt.get(email) as
+    | { key_hash: string; created_at: string; last_used_at: string | null }
+    | undefined;
+  if (!row) return { hasKey: false, createdAt: null, lastUsedAt: null };
+  return { hasKey: true, createdAt: row.created_at, lastUsedAt: row.last_used_at };
+}
+
+function revokeMcpKey(email: string): boolean {
+  const info = deleteMcpKeyStmt.run(email);
+  return info.changes > 0;
 }
 
 function maskEmail(email: string | null | undefined): string | null {
@@ -942,6 +1020,32 @@ function dumpXml(element: Y.XmlElement | Y.XmlText | Y.XmlFragment, indent = 0):
   return r;
 }
 
+/**
+ * Strict variant of getOrCreateDoc used by MCP tool handlers. Refuses to
+ * touch a doc that has no row in `documents` — this closes the anon
+ * storage-pollution vector where `getOrCreateDoc` would happily allocate
+ * an in-memory Yjs doc for any caller-supplied ID and then persist its
+ * content into `yjs_documents`.
+ *
+ * Returns a mcpError-shaped object on failure so tool handlers can
+ * early-return without try/catch gymnastics.
+ */
+function getDocStrictForMcp(docName: string):
+  | { ok: true; entry: DocEntry }
+  | { ok: false; error: ReturnType<typeof mcpError> } {
+  const row = getDocOwnerStmt.get(docName) as { owner_id: string | null } | undefined;
+  if (!row) {
+    return {
+      ok: false,
+      error: mcpError(
+        "not_found",
+        `Document "${docName}" does not exist. Create it in the web app (postpaper.co) first, then share its URL with the AI.`
+      ),
+    };
+  }
+  return { ok: true, entry: getOrCreateDoc(docName) };
+}
+
 function getOrCreateDoc(docName: string): DocEntry {
   const existing = docs.get(docName);
   if (existing) return existing;
@@ -1196,7 +1300,15 @@ function resolvePageForMcp(
   }
 }
 
-function createMcpServer(): McpServer {
+/**
+ * Build a fresh MCP server instance for one HTTP request. The optional
+ * `userEmail` argument is the identity resolved from the `?key=` query
+ * param on /mcp. When present, each tool handler authorizes the doc via
+ * `authorizeMcpCall` → `getDocAccess`. When null, only share-token URLs
+ * (/v/:token) work; /doc/:id calls are rejected with a pointer to the
+ * dashboard key-minting flow.
+ */
+function createMcpServer(userEmail: string | null = null): McpServer {
   const mcp = new McpServer({
     name: "PostPaper",
     version: "0.4.2",
@@ -1228,10 +1340,14 @@ function createMcpServer(): McpServer {
     async ({ doc_url, page }) => {
       let ctx: DocUrlContext;
       try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const authz = authorizeMcpCall(ctx, userEmail, "read");
+      if (!authz.ok) return authz.error;
       const { docId, viaShareToken, role } = ctx;
       logEvent("mcp.read_document", docId, { page: page ?? null, via: viaShareToken ? "share" : "doc" });
       try {
-        const entry = getOrCreateDoc(docId);
+        const got = getDocStrictForMcp(docId);
+        if (!got.ok) return got.error;
+        const entry = got.entry;
         const resolved = resolvePageForMcp(entry.ydoc, page);
         if (!resolved.ok) return resolved.error;
         const { page: targetPage } = resolved;
@@ -1293,12 +1409,14 @@ function createMcpServer(): McpServer {
     async ({ doc_url, content, mode, page }) => {
       let ctx: DocUrlContext;
       try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
-      const viewerErr = requireEditor(ctx);
-      if (viewerErr) return viewerErr;
+      const authz = authorizeMcpCall(ctx, userEmail, "write");
+      if (!authz.ok) return authz.error;
       const { docId } = ctx;
       logEvent("mcp.edit_document", docId, { mode, chars: content.length, page: page ?? null });
       try {
-        const entry = getOrCreateDoc(docId);
+        const got = getDocStrictForMcp(docId);
+        if (!got.ok) return got.error;
+        const entry = got.entry;
         const resolved = resolvePageForMcp(entry.ydoc, page);
         if (!resolved.ok) return resolved.error;
         const { page: targetPage } = resolved;
@@ -1337,12 +1455,14 @@ function createMcpServer(): McpServer {
     async ({ doc_url, block_id, text, block_type, level, text_color, background_color, text_alignment, page }) => {
       let ctx: DocUrlContext;
       try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
-      const viewerErr = requireEditor(ctx);
-      if (viewerErr) return viewerErr;
+      const authz = authorizeMcpCall(ctx, userEmail, "write");
+      if (!authz.ok) return authz.error;
       const { docId } = ctx;
       logEvent("mcp.update_block", docId, { block_id, page: page ?? null });
       try {
-        const entry = getOrCreateDoc(docId);
+        const got = getDocStrictForMcp(docId);
+        if (!got.ok) return got.error;
+        const entry = got.entry;
         const resolved = resolvePageForMcp(entry.ydoc, page);
         if (!resolved.ok) return resolved.error;
         const { page: targetPage } = resolved;
@@ -1385,12 +1505,14 @@ function createMcpServer(): McpServer {
     async ({ doc_url, block_id, page }) => {
       let ctx: DocUrlContext;
       try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
-      const viewerErr = requireEditor(ctx);
-      if (viewerErr) return viewerErr;
+      const authz = authorizeMcpCall(ctx, userEmail, "write");
+      if (!authz.ok) return authz.error;
       const { docId } = ctx;
       logEvent("mcp.delete_block", docId, { block_id, page: page ?? null });
       try {
-        const entry = getOrCreateDoc(docId);
+        const got = getDocStrictForMcp(docId);
+        if (!got.ok) return got.error;
+        const entry = got.entry;
         const resolved = resolvePageForMcp(entry.ydoc, page);
         if (!resolved.ok) return resolved.error;
         const { page: targetPage } = resolved;
@@ -1423,12 +1545,14 @@ function createMcpServer(): McpServer {
     async ({ doc_url, after_block_id, text, block_type, level, text_color, background_color, page }) => {
       let ctx: DocUrlContext;
       try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
-      const viewerErr = requireEditor(ctx);
-      if (viewerErr) return viewerErr;
+      const authz = authorizeMcpCall(ctx, userEmail, "write");
+      if (!authz.ok) return authz.error;
       const { docId } = ctx;
       logEvent("mcp.insert_block", docId, { after_block_id, block_type, page: page ?? null });
       try {
-        const entry = getOrCreateDoc(docId);
+        const got = getDocStrictForMcp(docId);
+        if (!got.ok) return got.error;
+        const entry = got.entry;
         const resolved = resolvePageForMcp(entry.ydoc, page);
         if (!resolved.ok) return resolved.error;
         const { page: targetPage } = resolved;
@@ -1460,15 +1584,17 @@ function createMcpServer(): McpServer {
     async ({ doc_url, rows, after_block_id, page }) => {
       let ctx: DocUrlContext;
       try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
-      const viewerErr = requireEditor(ctx);
-      if (viewerErr) return viewerErr;
+      const authz = authorizeMcpCall(ctx, userEmail, "write");
+      if (!authz.ok) return authz.error;
       const { docId } = ctx;
       logEvent("mcp.create_table", docId, { rows: rows?.length ?? 0, cols: rows?.[0]?.length ?? 0, page: page ?? null });
       try {
         if (!rows || rows.length === 0) {
           return mcpError("invalid_input", "rows must have at least one row.");
         }
-        const entry = getOrCreateDoc(docId);
+        const got = getDocStrictForMcp(docId);
+        if (!got.ok) return got.error;
+        const entry = got.entry;
         const resolved = resolvePageForMcp(entry.ydoc, page);
         if (!resolved.ok) return resolved.error;
         const { page: targetPage } = resolved;
@@ -1504,11 +1630,15 @@ function createMcpServer(): McpServer {
     async ({ doc_url }) => {
       let ctx: DocUrlContext;
       try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
+      const authz = authorizeMcpCall(ctx, userEmail, "read");
+      if (!authz.ok) return authz.error;
       const { docId, viaShareToken, role } = ctx;
       logEvent("mcp.list_pages", docId, { via: viaShareToken ? "share" : "doc" });
       void role; // listing is always allowed; read_document surfaces the access note
       try {
-        const entry = getOrCreateDoc(docId);
+        const got = getDocStrictForMcp(docId);
+        if (!got.ok) return got.error;
+        const entry = got.entry;
         const pages = listPages(entry.ydoc);
         const lines = pages.map((p, i) => `${i + 1}. "${p.title}" — id: ${p.id}${i === 0 ? " (default)" : ""}`);
         return {
@@ -1533,12 +1663,14 @@ function createMcpServer(): McpServer {
     async ({ doc_url, title }) => {
       let ctx: DocUrlContext;
       try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
-      const viewerErr = requireEditor(ctx);
-      if (viewerErr) return viewerErr;
+      const authz = authorizeMcpCall(ctx, userEmail, "write");
+      if (!authz.ok) return authz.error;
       const { docId } = ctx;
       logEvent("mcp.create_page", docId, { title });
       try {
-        const entry = getOrCreateDoc(docId);
+        const got = getDocStrictForMcp(docId);
+        if (!got.ok) return got.error;
+        const entry = got.entry;
         const trimmed = title.trim();
         if (!trimmed) return mcpError("invalid_input", "title cannot be empty.");
         const pageId = createPage(entry.ydoc, trimmed);
@@ -1565,12 +1697,14 @@ function createMcpServer(): McpServer {
     async ({ doc_url, page, new_title }) => {
       let ctx: DocUrlContext;
       try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
-      const viewerErr = requireEditor(ctx);
-      if (viewerErr) return viewerErr;
+      const authz = authorizeMcpCall(ctx, userEmail, "write");
+      if (!authz.ok) return authz.error;
       const { docId } = ctx;
       logEvent("mcp.rename_page", docId, { page });
       try {
-        const entry = getOrCreateDoc(docId);
+        const got = getDocStrictForMcp(docId);
+        if (!got.ok) return got.error;
+        const entry = got.entry;
         const trimmed = new_title.trim();
         if (!trimmed) return mcpError("invalid_input", "new_title cannot be empty.");
         const resolved = resolvePageForMcp(entry.ydoc, page);
@@ -1600,12 +1734,14 @@ function createMcpServer(): McpServer {
     async ({ doc_url, page }) => {
       let ctx: DocUrlContext;
       try { ctx = resolveDocUrl(doc_url); } catch (e) { return mcpErrorFromException(e); }
-      const viewerErr = requireEditor(ctx);
-      if (viewerErr) return viewerErr;
+      const authz = authorizeMcpCall(ctx, userEmail, "write");
+      if (!authz.ok) return authz.error;
       const { docId } = ctx;
       logEvent("mcp.delete_page", docId, { page });
       try {
-        const entry = getOrCreateDoc(docId);
+        const got = getDocStrictForMcp(docId);
+        if (!got.ok) return got.error;
+        const entry = got.entry;
         const resolved = resolvePageForMcp(entry.ydoc, page);
         if (!resolved.ok) return resolved.error;
         const { page: targetPage } = resolved;
@@ -1872,11 +2008,65 @@ function mcpViewerWriteError() {
   );
 }
 
-/** Require editor privileges on the resolved URL. Returns the error result
- *  if the caller used a view-only link — tool handlers should early-return it. */
-function requireEditor(ctx: DocUrlContext) {
-  if (ctx.role === "viewer") return mcpViewerWriteError();
-  return null;
+/** Authorize a caller's access to a doc inside an MCP tool handler.
+ *
+ * Rules, in order:
+ *   1. Share-token URL (/v/:token) — the token's role is the authority; no
+ *      user identity needed. Writes still require editor role.
+ *   2. Canonical URL (/doc/:id) with MCP API key (userEmail set) — look up
+ *      the live ACL. Must have at least `need` level to proceed.
+ *   3. Canonical URL without API key — reject, tell the user to mint one.
+ *
+ * Returns `{ ok: true }` on success or an mcpError to early-return.
+ */
+function authorizeMcpCall(
+  ctx: DocUrlContext,
+  userEmail: string | null,
+  need: "read" | "write"
+):
+  | { ok: true }
+  | { ok: false; error: ReturnType<typeof mcpError> } {
+  if (ctx.viaShareToken) {
+    // /v/:token path — already role-gated by the token's stored role.
+    if (need === "write" && ctx.role !== "editor" && ctx.role !== "commenter") {
+      return { ok: false, error: mcpViewerWriteError() };
+    }
+    return { ok: true };
+  }
+
+  // Canonical /doc/:id — requires an authenticated user identity.
+  if (!userEmail) {
+    return {
+      ok: false,
+      error: mcpError(
+        "invalid_input",
+        "This MCP endpoint requires an API key to read or edit documents by /doc/:id URL. " +
+        "Generate one at https://postpaper.co/dashboard and append ?key=YOUR_KEY to the MCP server URL. " +
+        "Alternatively, paste a /v/:token share link to read/comment without a key."
+      ),
+    };
+  }
+
+  const access = getDocAccess(ctx.docId, userEmail);
+  if (!access) {
+    return {
+      ok: false,
+      error: mcpError(
+        "not_found",
+        `No access to document "${ctx.docId}" for this API key. Ask the owner to invite you via an editor/commenter link, or check that you're using the key tied to the right account.`
+      ),
+    };
+  }
+  if (need === "write" && access !== "owner" && access !== "editor") {
+    return {
+      ok: false,
+      error: mcpError(
+        "invalid_input",
+        `Your role on this document is "${access}" — you can read/comment but cannot edit. Ask the owner for editor access.`
+      ),
+    };
+  }
+  return { ok: true };
 }
 
 // ─── HTTP API for document metadata ────────────────────────────────────────
@@ -2302,6 +2492,81 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // ─── Per-user MCP API keys ───────────────────────────────────────────
+  //
+  // The Next.js layer authenticates the user via NextAuth and forwards
+  // the verified email. Because "mint a key for any email" would be a
+  // trivial account-takeover vector, these endpoints require
+  // INTERNAL_SECRET in addition to trusting the email — the secret is
+  // shared only between Next.js and ws-server. Request from outside is
+  // rejected even if the attacker guesses the right email.
+  //
+  // Response on mint returns the plaintext key once; afterwards only
+  // the metadata (createdAt, lastUsedAt) is readable. Revoke is
+  // idempotent.
+  if (pathname === "/api/me/mcp-key") {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    }
+
+    // POST — mint (rotates if one already exists).
+    // Body: { email }. Returns: { key, createdAt }.
+    if (req.method === "POST") {
+      try {
+        const body = await parseBody(req);
+        const email = (body.email as string) || "";
+        if (!email) {
+          sendJson(res, 400, { error: "email required" });
+          return;
+        }
+        const { key, createdAt } = mintMcpKey(email);
+        logEvent("mcp_key.mint", null, { email: maskEmail(email) });
+        sendJson(res, 201, { key, createdAt });
+      } catch (e) {
+        sendJson(res, 500, { error: String(e) });
+      }
+      return;
+    }
+
+    // GET ?email=... — info (no plaintext).
+    // Returns: { hasKey, createdAt, lastUsedAt }.
+    if (req.method === "GET") {
+      const email = url.searchParams.get("email") || "";
+      if (!email) {
+        sendJson(res, 400, { error: "email required" });
+        return;
+      }
+      sendJson(res, 200, getMcpKeyInfo(email));
+      return;
+    }
+
+    // DELETE — revoke. Body or query: { email }.
+    if (req.method === "DELETE") {
+      try {
+        const body = (await parseBody(req).catch(() => ({}))) as Record<string, unknown>;
+        const email = (body.email as string) || url.searchParams.get("email") || "";
+        if (!email) {
+          sendJson(res, 400, { error: "email required" });
+          return;
+        }
+        const revoked = revokeMcpKey(email);
+        if (revoked) logEvent("mcp_key.revoke", null, { email: maskEmail(email) });
+        sendJson(res, 200, { revoked });
+      } catch (e) {
+        sendJson(res, 500, { error: String(e) });
+      }
+      return;
+    }
+
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
   // GET /api/docs/:id/debug — dump XML structure
   const debugMatch = pathname.match(/^\/api\/docs\/([^/]+)\/debug$/);
   if (req.method === "GET" && debugMatch) {
@@ -2359,7 +2624,14 @@ const httpServer = http.createServer(async (req, res) => {
 
     if (req.method === "POST") {
       try {
-        const mcpServer = createMcpServer();
+        // Resolve caller identity from ?key=… if present. Missing/invalid
+        // keys don't hard-fail the request here — they just leave
+        // `userEmail = null`, which the per-tool authz layer will translate
+        // into a friendly "mint a key" error when the caller tries to touch
+        // a /doc/:id URL. Share-token URLs (/v/:token) work without a key.
+        const keyParam = url.searchParams.get("key");
+        const userEmail = keyParam ? lookupMcpKey(keyParam) : null;
+        const mcpServer = createMcpServer(userEmail);
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: undefined, // stateless
         });
