@@ -15,7 +15,7 @@ interface ToolbarProps {
 }
 
 export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, isOwner }: ToolbarProps) {
-  const [copied, setCopied] = useState<"edit" | "view" | null>(null);
+  const [copied, setCopied] = useState<"edit" | "view" | "ai" | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [mintingView, setMintingView] = useState(false);
   const [mintingEdit, setMintingEdit] = useState(false);
@@ -138,8 +138,15 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, is
 
   // Single unified copy handler. Called directly from each row's button,
   // so Safari sees a fresh user-gesture and writeText is allowed.
-  function copyShareLink(which: "edit" | "view") {
-    const url = which === "edit" ? editLinkUrl : viewLinkUrl;
+  function copyShareLink(which: "edit" | "view" | "ai") {
+    let url: string | null = null;
+    if (which === "edit") url = editLinkUrl;
+    else if (which === "view") url = viewLinkUrl;
+    else if (which === "ai") {
+      // Canonical /doc/:id URL — what MCP expects as doc_url. This one
+      // doesn't need minting; the URL is always available.
+      url = typeof window !== "undefined" ? `${window.location.origin}/doc/${docId}` : null;
+    }
     if (!url) return;
     copyToClipboard(url);
     setCopied(which);
@@ -224,11 +231,14 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, is
             <div className="fixed inset-0 z-10" onClick={() => setShareOpen(false)} />
             <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20 w-[340px]">
               {/* Editor invite row — owner only. Non-owners see a hint
-                  because only the owner can hand out edit permissions. */}
+                  because only the owner can hand out edit permissions.
+                  Explicitly labelled "a person" to disambiguate from the
+                  AI-agent row below — this link is gated by Google sign-in
+                  and is not accepted by MCP clients. */}
               {isOwner ? (
                 <div className="px-4 py-3">
                   <div className="flex items-baseline justify-between mb-1.5">
-                    <div className="text-sm font-medium text-gray-900">Invite to edit</div>
+                    <div className="text-sm font-medium text-gray-900">Invite a person to edit</div>
                     <div className="text-xs text-gray-500">sign-in required</div>
                   </div>
                   {!sessionUser ? (
@@ -255,12 +265,12 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, is
                     </div>
                   )}
                   <p className="text-[11px] text-gray-500 mt-2 leading-snug">
-                    Whoever opens this link signs in and is added to the document as an editor.
+                    They sign in with Google and get editor access. Not for AI agents — use the link below for that.
                   </p>
                 </div>
               ) : (
                 <div className="px-4 py-3">
-                  <div className="text-sm font-medium text-gray-900 mb-1">Invite to edit</div>
+                  <div className="text-sm font-medium text-gray-900 mb-1">Invite a person to edit</div>
                   <p className="text-xs text-gray-500 leading-snug">
                     Only the document owner can hand out edit access. Ask them for an invite link.
                   </p>
@@ -270,7 +280,7 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, is
               {/* View link row — anyone signed in can mint / copy. */}
               <div className="px-4 py-3 border-t border-gray-100">
                 <div className="flex items-baseline justify-between mb-1.5">
-                  <div className="text-sm font-medium text-gray-900">View link</div>
+                  <div className="text-sm font-medium text-gray-900">View link for a person</div>
                   <div className="text-xs text-gray-500">read-only, no sign-in</div>
                 </div>
                 {!sessionUser ? (
@@ -296,6 +306,35 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, is
                     </button>
                   </div>
                 )}
+              </div>
+
+              {/* AI-agent row — the canonical /doc/:id URL. This is what
+                  Claude's MCP expects as doc_url. No minting needed (the
+                  URL is deterministic); access is gated by the API key
+                  the AI attaches to the MCP server URL. */}
+              <div className="px-4 py-3 border-t border-gray-100">
+                <div className="flex items-baseline justify-between mb-1.5">
+                  <div className="text-sm font-medium text-gray-900">Link for AI agents (MCP)</div>
+                  <div className="text-xs text-gray-500">requires API key</div>
+                </div>
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    readOnly
+                    value={typeof window !== "undefined" ? `${window.location.origin}/doc/${docId}` : ""}
+                    onFocus={(e) => e.target.select()}
+                    className="flex-1 min-w-0 px-2 py-1 text-xs border border-gray-200 rounded bg-gray-50 focus:outline-none focus:border-gray-400"
+                  />
+                  <button
+                    onClick={() => copyShareLink("ai")}
+                    className="px-3 py-1 text-xs font-medium bg-gray-900 hover:bg-gray-700 text-white rounded transition-colors shrink-0 w-[60px]"
+                  >
+                    {copied === "ai" ? "Copied" : "Copy"}
+                  </button>
+                </div>
+                <p className="text-[11px] text-gray-500 mt-2 leading-snug">
+                  Paste into Claude as <code className="text-[10px] bg-gray-100 px-1 rounded">doc_url</code>. The AI must already have an API key from <Link href="/dashboard" className="underline hover:text-gray-700">your dashboard</Link>.
+                </p>
               </div>
             </div>
           </>

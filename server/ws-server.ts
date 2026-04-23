@@ -2294,6 +2294,18 @@ const FORMATTING_GUIDE = MCP_INSTRUCTIONS;
 type DocUrlContext = { docId: string; role: ShareRole; viaShareToken: boolean };
 
 function resolveDocUrl(docUrl: string): DocUrlContext {
+  // /e/:token — editor invite link for humans. It's Google-SSO-gated
+  // (clicking redeems the token and adds the signed-in user to the ACL),
+  // so it's never valid as an MCP doc_url. Fail fast with a clear pointer
+  // to the two URLs that do work, instead of letting the bare-id fallback
+  // below try to interpret the token as a document ID.
+  if (/\/e\/[^/?#]+/.test(docUrl)) {
+    throw new Error(
+      "That looks like an editor invite link (/e/:token). These are for humans — opening one signs you in with Google and grants edit access. They are not accepted as MCP doc_url values. " +
+      "Ask the document owner for the canonical /doc/:id URL (paired with an MCP API key for write access), or a /v/:token view-only share link for read access."
+    );
+  }
+
   // /v/:token — look up the share token to get the real doc id + role.
   // Accept bare token as /v/... with no scheme, full URL, query/hash tails.
   const viewerMatch = docUrl.match(/\/v\/([^/?#]+)/);
