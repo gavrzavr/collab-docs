@@ -70,12 +70,12 @@ body {
    .bn-block-content) because BlockNote's block is display:flex and
    margins on the inner content wrapper don't translate to visible
    separation between sibling blocks.
-   :has() is used without `>` combinators on purpose: BlockNote
-   sometimes nests heading blocks inside one or two `<div data-type=
-   "modification">` layers (see the "modification" path in their
-   Block.css), which a strict `>` selector would skip — that was why
-   H1 in the middle of a doc was appearing without any top air while
-   H2 and H3 worked. */
+   BlockNote quirk: for H1 the `data-level` attribute is OMITTED (H1
+   is the implicit default); `data-level` is only present for H2/H3/…
+   (you can verify in their BlockNoteEditor test snapshots). So the
+   H1 selector has to match "heading without data-level" — matching
+   `[data-level="1"]` would silently miss every H1. */
+.bn-container .bn-block-outer:has([data-content-type="heading"]:not([data-level])),
 .bn-container .bn-block-outer:has([data-content-type="heading"][data-level="1"]) {
   margin-top: 1em !important;
 }
