@@ -46,17 +46,17 @@ body {
    BlockNote doesn't publish stable CSS variables for these. */
 .bn-container h1 {
   font-size: 2rem !important;      /* was ~2.5rem */
-  line-height: 1.2 !important;
+  line-height: 1.1 !important;     /* tight so a wrapped heading reads as one block */
   letter-spacing: -0.01em;
 }
 .bn-container h2 {
   font-size: 1.5rem !important;    /* was ~2rem */
-  line-height: 1.25 !important;
+  line-height: 1.15 !important;
   letter-spacing: -0.005em;
 }
 .bn-container h3 {
   font-size: 1.25rem !important;   /* was ~1.5rem */
-  line-height: 1.3 !important;
+  line-height: 1.2 !important;
 }
 
 /* Add a bit of breathing room above headings so level transitions
