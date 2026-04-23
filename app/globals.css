@@ -65,13 +65,13 @@ body {
    rather than the inner <h1> so margins work at the block level and
    don't collide with inline text metrics. */
 .bn-container [data-content-type="heading"][data-level="1"] {
-  margin-top: 3em !important;
-}
-.bn-container [data-content-type="heading"][data-level="2"] {
   margin-top: 2em !important;
 }
-.bn-container [data-content-type="heading"][data-level="3"] {
+.bn-container [data-content-type="heading"][data-level="2"] {
   margin-top: 1.5em !important;
+}
+.bn-container [data-content-type="heading"][data-level="3"] {
+  margin-top: 1em !important;
 }
 
 /* Zero the top margin when the heading is the very first block of the
