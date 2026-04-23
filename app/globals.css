@@ -46,38 +46,50 @@ body {
    BlockNote doesn't publish stable CSS variables for these. */
 .bn-container h1 {
   font-size: 2rem !important;      /* was ~2.5rem */
+  font-weight: bold !important;    /* BlockNote only applies bold to the very first block;
+                                      force it so H1 weight is uniform everywhere. */
   line-height: 1.1 !important;     /* tight so a wrapped heading reads as one block */
   letter-spacing: -0.01em;
 }
 .bn-container h2 {
   font-size: 1.5rem !important;    /* was ~2rem */
+  font-weight: bold !important;
   line-height: 1.15 !important;
   letter-spacing: -0.005em;
 }
 .bn-container h3 {
   font-size: 1.25rem !important;   /* was ~1.5rem */
+  font-weight: bold !important;
   line-height: 1.2 !important;
 }
 
 /* Breathing room above headings — proportional to heading weight —
    so each heading visually opens a new section instead of hugging the
-   paragraph above. Targeting the block wrapper (data-content-type)
-   rather than the inner <h1> so margins work at the block level and
-   don't collide with inline text metrics. */
-.bn-container [data-content-type="heading"][data-level="1"] {
-  margin-top: 2em !important;
-}
-.bn-container [data-content-type="heading"][data-level="2"] {
-  margin-top: 1.5em !important;
-}
-.bn-container [data-content-type="heading"][data-level="3"] {
+   paragraph above.
+   Pushing margin onto .bn-block-outer via :has() (not onto
+   .bn-block-content) because BlockNote's block is display:flex and
+   margins on the inner content wrapper don't translate to visible
+   separation between sibling blocks. */
+.bn-container .bn-block-outer:has(
+  > .bn-block > [data-content-type="heading"][data-level="1"]
+) {
   margin-top: 1em !important;
 }
+.bn-container .bn-block-outer:has(
+  > .bn-block > [data-content-type="heading"][data-level="2"]
+) {
+  margin-top: 0.75em !important;
+}
+.bn-container .bn-block-outer:has(
+  > .bn-block > [data-content-type="heading"][data-level="3"]
+) {
+  margin-top: 0.5em !important;
+}
 
-/* Zero the top margin when the heading is the very first block of the
-   document — no air above a title at the top of the page. */
-.bn-container .bn-block-group > .bn-block-outer:first-child
-  [data-content-type="heading"] {
+/* No air above the very first block — typical case is a doc title sitting
+   at the top of the page. Also covers the first block of a nested group
+   (e.g. children of a toggled parent). */
+.bn-container .bn-block-group > .bn-block-outer:first-child {
   margin-top: 0 !important;
 }
 
