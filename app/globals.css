@@ -69,20 +69,20 @@ body {
    Pushing margin onto .bn-block-outer via :has() (not onto
    .bn-block-content) because BlockNote's block is display:flex and
    margins on the inner content wrapper don't translate to visible
-   separation between sibling blocks. */
-.bn-container .bn-block-outer:has(
-  > .bn-block > [data-content-type="heading"][data-level="1"]
-) {
+   separation between sibling blocks.
+   :has() is used without `>` combinators on purpose: BlockNote
+   sometimes nests heading blocks inside one or two `<div data-type=
+   "modification">` layers (see the "modification" path in their
+   Block.css), which a strict `>` selector would skip — that was why
+   H1 in the middle of a doc was appearing without any top air while
+   H2 and H3 worked. */
+.bn-container .bn-block-outer:has([data-content-type="heading"][data-level="1"]) {
   margin-top: 1em !important;
 }
-.bn-container .bn-block-outer:has(
-  > .bn-block > [data-content-type="heading"][data-level="2"]
-) {
+.bn-container .bn-block-outer:has([data-content-type="heading"][data-level="2"]) {
   margin-top: 0.75em !important;
 }
-.bn-container .bn-block-outer:has(
-  > .bn-block > [data-content-type="heading"][data-level="3"]
-) {
+.bn-container .bn-block-outer:has([data-content-type="heading"][data-level="3"]) {
   margin-top: 0.5em !important;
 }
 
