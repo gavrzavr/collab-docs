@@ -59,13 +59,27 @@ body {
   line-height: 1.2 !important;
 }
 
-/* Add a bit of breathing room above headings so level transitions
-   (H2 following paragraph, H3 following H2) don't feel cramped when
-   multiple heading levels mix on one page. BlockNote's defaults give
-   headings the same top margin as paragraphs, which is too tight. */
-.bn-container h1 { margin-top: 0.6em; }
-.bn-container h2 { margin-top: 0.5em; }
-.bn-container h3 { margin-top: 0.4em; }
+/* Breathing room above headings — proportional to heading weight —
+   so each heading visually opens a new section instead of hugging the
+   paragraph above. Targeting the block wrapper (data-content-type)
+   rather than the inner <h1> so margins work at the block level and
+   don't collide with inline text metrics. */
+.bn-container [data-content-type="heading"][data-level="1"] {
+  margin-top: 2em !important;
+}
+.bn-container [data-content-type="heading"][data-level="2"] {
+  margin-top: 1.5em !important;
+}
+.bn-container [data-content-type="heading"][data-level="3"] {
+  margin-top: 1em !important;
+}
+
+/* Zero the top margin when the heading is the very first block of the
+   document — no air above a title at the top of the page. */
+.bn-container .bn-block-group > .bn-block-outer:first-child
+  [data-content-type="heading"] {
+  margin-top: 0 !important;
+}
 
 /* Hide Heading 4-6 and Toggle Headings from block type menu */
 [data-test="heading-4"],
