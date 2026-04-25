@@ -3115,7 +3115,7 @@ const httpServer = http.createServer(async (req, res) => {
         "PentestReadOnly%",
         "zzz-deploy-probe-%",
         "zzz-%",
-        "diag-probe-%",
+        "diag-%", // diag-probe-, diag-final-, anything else I left behind
       ];
       const whereId = PATTERNS.map(() => "id LIKE ?").join(" OR ");
       const whereDocId = PATTERNS.map(() => "doc_id LIKE ?").join(" OR ");
@@ -3579,40 +3579,114 @@ process.on("unhandledRejection", (err) => {
 });
 
 // ─── Automatic SQLite Backup ────────────────────────────────────────────────
-// Create a backup copy of the database every hour to protect against corruption.
+//
+// Hobby-tier tradeoffs (revised 2026-04-25 after the volume hit 100%):
+//
+//   1. ONE backup file, no rotation. Two slots (`backup` + `backup-prev`)
+//      ate ~half of a 5 GB volume when the DB grew to 1.6 GB — and the
+//      old rotation copied only `.db`, leaving the `-wal` sidecar
+//      orphaned and either bloating without bound or making the "prev"
+//      backup inconsistent on restore. Real disaster recovery here is
+//      git (code) + Yjs state (per-doc CRDT) + Railway snapshots, not
+//      a second copy on the same volume.
+//
+//   2. 6 h interval, not 1 h. Doc churn is low, hourly was overkill —
+//      every cycle rewrote 1.6 GB even when only a handful of blocks
+//      changed. The SQLite online backup API doesn't do incremental
+//      copies on this codepath.
+//
+//   3. Free-space guard. Skip the backup entirely if free space on
+//      DATA_DIR is less than 1.5x the live DB size. Better to miss a
+//      backup window than to wedge writes on a full volume.
+//
+//   4. Clean WAL/SHM of the destination before AND after backup.
+//      `db.backup()` opens the dest in WAL mode by default, leaving an
+//      orphan `-wal` that can grow on subsequent runs. We force the
+//      backup file to journal_mode=DELETE post-copy and unlink any
+//      stale sidecars that snuck in.
+const BACKUP_INTERVAL = 6 * 60 * 60 * 1000; // 6 h
+const BACKUP_FILENAME = "collab-docs-backup.db";
+const BACKUP_FREE_SPACE_MULTIPLIER = 1.5;
 
-const BACKUP_INTERVAL = 60 * 60 * 1000; // 1 hour
-
-function backupDatabase() {
+function getFreeBytes(dir: string): number {
   try {
-    // First, persist all in-memory docs so backup has latest data
-    persistAllDocs();
-
-    const backupPath = path.join(DATA_DIR, "collab-docs-backup.db");
-    const backupPathPrev = path.join(DATA_DIR, "collab-docs-backup-prev.db");
-
-    // Rotate: current backup → prev backup
-    if (fs.existsSync(backupPath)) {
-      fs.copyFileSync(backupPath, backupPathPrev);
-    }
-
-    // Use SQLite's backup API (safe even while db is in use)
-    db.backup(backupPath)
-      .then(() => {
-        console.log(`Database backed up to ${backupPath} at ${new Date().toISOString()}`);
-      })
-      .catch((e: Error) => {
-        console.error("Backup failed:", e);
-      });
-  } catch (e) {
-    console.error("Backup error:", e);
+    const stat = fs.statfsSync(dir);
+    return stat.bavail * stat.bsize;
+  } catch {
+    return Number.MAX_SAFE_INTEGER; // unknown — proceed
   }
 }
 
-// Run backup every hour
-setInterval(backupDatabase, BACKUP_INTERVAL);
-// Also run first backup 5 minutes after startup
-setTimeout(backupDatabase, 5 * 60 * 1000);
+function unlinkIfExists(p: string): number {
+  try {
+    const size = fs.statSync(p).size;
+    fs.unlinkSync(p);
+    return size;
+  } catch {
+    return 0;
+  }
+}
+
+async function backupDatabase() {
+  try {
+    persistAllDocs();
+
+    const backupPath = path.join(DATA_DIR, BACKUP_FILENAME);
+
+    let dbSize = 0;
+    try { dbSize = fs.statSync(DB_PATH).size; } catch { /* unreadable */ }
+
+    const free = getFreeBytes(DATA_DIR);
+    const required = Math.ceil(dbSize * BACKUP_FREE_SPACE_MULTIPLIER);
+    if (free < required) {
+      console.warn(
+        `[backup] skipped: free=${(free / 1e9).toFixed(2)}GB < ` +
+        `required=${(required / 1e9).toFixed(2)}GB ` +
+        `(dbSize=${(dbSize / 1e9).toFixed(2)}GB × ${BACKUP_FREE_SPACE_MULTIPLIER})`
+      );
+      return;
+    }
+
+    // Wipe stale dest + sidecars from a previous run before copying in.
+    unlinkIfExists(backupPath + "-wal");
+    unlinkIfExists(backupPath + "-shm");
+
+    await db.backup(backupPath);
+
+    // Force the dest into rollback-journal mode so a -wal can't grow
+    // alongside it during the next interval. This is the bit the old
+    // implementation missed — that's where the 1.65 GB orphan WAL came
+    // from. Open in a fresh handle, set the pragma, close cleanly.
+    try {
+      const Database = (await import("better-sqlite3")).default;
+      const tmp = new Database(backupPath);
+      tmp.pragma("journal_mode = DELETE");
+      tmp.close();
+    } catch (e) {
+      console.warn(`[backup] could not normalize journal_mode on backup file: ${e}`);
+    }
+
+    // Belt and suspenders: scrub any -wal/-shm that materialized during
+    // the backup window.
+    unlinkIfExists(backupPath + "-wal");
+    unlinkIfExists(backupPath + "-shm");
+
+    const backupSize = (() => {
+      try { return fs.statSync(backupPath).size; } catch { return 0; }
+    })();
+    console.log(
+      `[backup] ${(backupSize / 1e9).toFixed(2)}GB written to ${backupPath} ` +
+      `at ${new Date().toISOString()}`
+    );
+  } catch (e) {
+    console.error("[backup] failed:", e);
+  }
+}
+
+// Run backup every 6 h.
+setInterval(() => { void backupDatabase(); }, BACKUP_INTERVAL);
+// First backup 5 minutes after startup.
+setTimeout(() => { void backupDatabase(); }, 5 * 60 * 1000);
 
 const HOST = process.env.HOST || "0.0.0.0";
 
