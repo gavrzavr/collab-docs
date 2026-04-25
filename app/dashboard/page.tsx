@@ -55,9 +55,24 @@ export default function DashboardPage() {
     setCreating(true);
     try {
       const res = await fetch("/api/v1/docs", { method: "POST" });
+      if (!res.ok) {
+        // Most likely ws-server briefly unreachable (Railway redeploy,
+        // network flake). The previous version of this handler swallowed
+        // the failure and redirected into a phantom doc that had no row
+        // in the `documents` table — leading to a confusing "No access"
+        // page right after the user clicked New Document.
+        const data = await res.json().catch(() => ({}));
+        alert(
+          data.error ||
+            "Couldn't create the document right now. Please try again in a moment."
+        );
+        setCreating(false);
+        return;
+      }
       const data = await res.json();
       router.push(`/doc/${data.id}`);
     } catch {
+      alert("Network error — please check your connection and try again.");
       setCreating(false);
     }
   }

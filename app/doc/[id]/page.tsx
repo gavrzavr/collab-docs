@@ -73,11 +73,65 @@ export default async function DocPage({ params }: { params: Promise<{ id: string
     redirect(`/api/auth/signin?callbackUrl=${encodeURIComponent(`/doc/${id}`)}`);
   }
 
-  const access = await getDocAccess(id, email).catch(() => null);
+  // Three distinct failure modes here, all previously collapsed into the
+  // same "No access" UI — leading to misleading "this document hasn't been
+  // shared with you" text when the doc literally didn't exist (the bug
+  // that bites users right after clicking New Document, when the
+  // `documents` row never made it to ws-server).
+  //
+  //   1. lookup itself failed (network / ws-server down)  →  service error
+  //   2. ws-server returned 404 (no row in `documents`)   →  not found
+  //   3. ws-server found the row but email isn't on ACL   →  no access
+  let lookupFailed = false;
+  let access: Awaited<ReturnType<typeof getDocAccess>> = null;
+  try {
+    access = await getDocAccess(id, email);
+  } catch {
+    lookupFailed = true;
+  }
 
-  if (!access || access.access === null) {
-    // Signed in but no access — show a 403-style page with a hint to ask
-    // the owner for an invite.
+  if (lookupFailed) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <div className="max-w-md text-center">
+          <h1 className="text-2xl font-semibold mb-3">Couldn&apos;t reach the sync server</h1>
+          <p className="text-gray-600 mb-6">
+            We couldn&apos;t verify your access right now. This is usually transient —
+            please reload in a moment.
+          </p>
+          <a
+            href="/dashboard"
+            className="inline-block px-4 py-2 bg-black text-white rounded hover:bg-gray-800"
+          >
+            Back to your documents
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  if (!access) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <div className="max-w-md text-center">
+          <h1 className="text-2xl font-semibold mb-3">Document not found</h1>
+          <p className="text-gray-600 mb-6">
+            We couldn&apos;t find a document with this ID. It may have been deleted, or
+            the link may be wrong.
+          </p>
+          <a
+            href="/dashboard"
+            className="inline-block px-4 py-2 bg-black text-white rounded hover:bg-gray-800"
+          >
+            Back to your documents
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  if (access.access === null) {
+    // Signed in but not on the ACL — show a 403-style page.
     return (
       <div className="min-h-screen flex items-center justify-center px-4">
         <div className="max-w-md text-center">
