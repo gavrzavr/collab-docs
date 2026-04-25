@@ -3050,9 +3050,14 @@ const httpServer = http.createServer(async (req, res) => {
     try {
       const body = await parseBody(req);
       const name = (body as { name?: string }).name || "";
-      if (!/^collab-docs-backup(-prev)?\.db$/.test(name)) {
+      // Accepts the backup DB itself plus its WAL/SHM sidecars. Live DB
+      // names ('collab-docs.db', 'collab-docs.db-wal', 'collab-docs.db-shm')
+      // do NOT match — the regex requires the '-backup' segment.
+      if (!/^collab-docs-backup(-prev)?\.db(-wal|-shm)?$/.test(name)) {
         sendJson(res, 400, {
-          error: "name must be 'collab-docs-backup.db' or 'collab-docs-backup-prev.db'",
+          error:
+            "name must be a backup DB or its sidecar — " +
+            "matches /^collab-docs-backup(-prev)?\\.db(-wal|-shm)?$/",
         });
         return;
       }
