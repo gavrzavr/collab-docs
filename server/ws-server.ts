@@ -2948,6 +2948,129 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /api/admin/disk-usage — what's eating /app/data.
+  //
+  // Reports every file in DATA_DIR with its size, plus a `total`. The
+  // Railway "Volume Is Full" alert fired with the main DB at only
+  // 1.66 GB out of a 5 GB volume — suggesting WAL files and backup
+  // copies were the actual bulk. Need this view to confirm before
+  // deciding what to reclaim.
+  if (req.method === "GET" && pathname === "/api/admin/disk-usage") {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    } else {
+      sendJson(res, 503, { error: "INTERNAL_SECRET is not configured" });
+      return;
+    }
+
+    try {
+      const entries = fs.readdirSync(DATA_DIR, { withFileTypes: true });
+      const files: Array<{ name: string; size: number; isDir: boolean }> = [];
+      let total = 0;
+      for (const entry of entries) {
+        const full = path.join(DATA_DIR, entry.name);
+        try {
+          const stat = fs.statSync(full);
+          files.push({ name: entry.name, size: stat.size, isDir: entry.isDirectory() });
+          total += stat.size;
+        } catch {
+          // skip unreadable
+        }
+      }
+      files.sort((a, b) => b.size - a.size);
+      sendJson(res, 200, { dataDir: DATA_DIR, total, files });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
+  // POST /api/admin/wal-checkpoint — truncate the WAL file.
+  //
+  // SQLite's WAL mode keeps committed transactions in a sidecar file
+  // until a checkpoint folds them back into the main DB. Under sustained
+  // write load the WAL can grow much bigger than the DB itself; a
+  // TRUNCATE checkpoint folds everything in AND shrinks the WAL file
+  // back to zero bytes. Cheap and safe — does not touch user data.
+  if (req.method === "POST" && pathname === "/api/admin/wal-checkpoint") {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    } else {
+      sendJson(res, 503, { error: "INTERNAL_SECRET is not configured" });
+      return;
+    }
+
+    try {
+      const sizeBeforeWal = (() => {
+        try { return fs.statSync(DB_PATH + "-wal").size; } catch { return 0; }
+      })();
+      const result = db.pragma("wal_checkpoint(TRUNCATE)");
+      const sizeAfterWal = (() => {
+        try { return fs.statSync(DB_PATH + "-wal").size; } catch { return 0; }
+      })();
+      sendJson(res, 200, {
+        result,
+        walSizeBefore: sizeBeforeWal,
+        walSizeAfter: sizeAfterWal,
+        walBytesFreed: sizeBeforeWal - sizeAfterWal,
+      });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
+  // POST /api/admin/delete-backup — remove one of the SQLite backup
+  // files in DATA_DIR. Body: { name: "collab-docs-backup-prev.db" }.
+  // Only accepts file names matching ^collab-docs-backup(-prev)?\.db$
+  // so a misuse can't blow away the live DB.
+  if (req.method === "POST" && pathname === "/api/admin/delete-backup") {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    } else {
+      sendJson(res, 503, { error: "INTERNAL_SECRET is not configured" });
+      return;
+    }
+
+    try {
+      const body = await parseBody(req);
+      const name = (body as { name?: string }).name || "";
+      if (!/^collab-docs-backup(-prev)?\.db$/.test(name)) {
+        sendJson(res, 400, {
+          error: "name must be 'collab-docs-backup.db' or 'collab-docs-backup-prev.db'",
+        });
+        return;
+      }
+      const full = path.join(DATA_DIR, name);
+      let sizeBefore = 0;
+      try { sizeBefore = fs.statSync(full).size; } catch { /* not present */ }
+      try {
+        fs.unlinkSync(full);
+        sendJson(res, 200, { deleted: name, freedBytes: sizeBefore });
+      } catch (e) {
+        sendJson(res, 404, { error: `cannot delete ${name}: ${String(e)}` });
+      }
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
   // POST /api/admin/cleanup-pentest — emergency disk reclaim.
   //
   // Added 2026-04-25 after the Railway SQLite volume hit 100% and every
