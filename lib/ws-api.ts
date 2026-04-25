@@ -8,6 +8,20 @@ export async function createDocumentMeta(id: string, title: string, ownerId: str
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id, title, ownerId }),
   });
+  // Critical: throw on HTTP errors so the caller can surface them to the
+  // user instead of silently returning a phantom doc id whose row never
+  // landed in `documents`. (This was the root cause of the "Document not
+  // found" page showing up right after clicking New Document.)
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const body = await res.text();
+      detail = body ? ` — ${body.slice(0, 200)}` : "";
+    } catch {
+      // ignore body read failure
+    }
+    throw new Error(`createDocumentMeta failed: ${res.status} ${res.statusText}${detail}`);
+  }
   return res.json();
 }
 
