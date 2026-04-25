@@ -2948,6 +2948,124 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /api/admin/cleanup-pentest — emergency disk reclaim.
+  //
+  // Added 2026-04-25 after the Railway SQLite volume hit 100% and every
+  // INSERT into `documents` started failing with "database or disk is
+  // full". Hobby tier has no shell, so we expose the cleanup-pentest
+  // logic over HTTP, gated by the same INTERNAL_SECRET other admin
+  // endpoints use.
+  //
+  // Body: { dryRun?: boolean }. Default is dryRun=false.
+  // Returns: { matched, deleted, sizeBefore, sizeAfter } in bytes.
+  //
+  // Matches doc ids by prefix only (Pentest%, zzz-deploy-probe-%, zzz-%,
+  // diag-probe-%) — real user docs are 10-char nanoids without these
+  // prefixes, so there is no risk of catching real content.
+  if (req.method === "POST" && pathname === "/api/admin/cleanup-pentest") {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    } else {
+      sendJson(res, 503, {
+        error: "INTERNAL_SECRET is not configured on this server",
+      });
+      return;
+    }
+
+    try {
+      const body = await parseBody(req).catch(() => ({}));
+      const dryRun = (body as { dryRun?: boolean }).dryRun === true;
+
+      const PATTERNS = [
+        "Pentest%",
+        "PentestDoc%",
+        "PentestReadOnly%",
+        "zzz-deploy-probe-%",
+        "zzz-%",
+        "diag-probe-%",
+      ];
+      const whereId = PATTERNS.map(() => "id LIKE ?").join(" OR ");
+      const whereDocId = PATTERNS.map(() => "doc_id LIKE ?").join(" OR ");
+
+      const matched = (
+        db
+          .prepare(`SELECT COUNT(*) AS n FROM documents WHERE ${whereId}`)
+          .get(...PATTERNS) as { n: number }
+      ).n;
+      const matchedYjs = (
+        db
+          .prepare(`SELECT COUNT(*) AS n FROM yjs_documents WHERE ${whereDocId}`)
+          .get(...PATTERNS) as { n: number }
+      ).n;
+      const matchedEvents = (
+        db
+          .prepare(`SELECT COUNT(*) AS n FROM events WHERE ${whereDocId}`)
+          .get(...PATTERNS) as { n: number }
+      ).n;
+
+      const sizeBefore = (() => {
+        try { return fs.statSync(DB_PATH).size; } catch { return 0; }
+      })();
+
+      if (dryRun) {
+        sendJson(res, 200, {
+          dryRun: true,
+          matched,
+          matchedYjs,
+          matchedEvents,
+          sizeBefore,
+        });
+        return;
+      }
+
+      const deleted = db.transaction(() => {
+        const a = db.prepare(`DELETE FROM documents WHERE ${whereId}`).run(...PATTERNS);
+        const b = db.prepare(`DELETE FROM yjs_documents WHERE ${whereDocId}`).run(...PATTERNS);
+        const c = db.prepare(`DELETE FROM events WHERE ${whereDocId}`).run(...PATTERNS);
+        const d = db.prepare(`DELETE FROM share_tokens WHERE ${whereDocId}`).run(...PATTERNS);
+        const e = db
+          .prepare(`DELETE FROM document_collaborators WHERE ${whereDocId}`)
+          .run(...PATTERNS);
+        return {
+          documents: a.changes,
+          yjs_documents: b.changes,
+          events: c.changes,
+          share_tokens: d.changes,
+          document_collaborators: e.changes,
+        };
+      })();
+
+      // VACUUM is the only way to release freed pages to the filesystem.
+      // It briefly takes a write lock — fine here, we already have one.
+      const t0 = Date.now();
+      db.exec("VACUUM");
+      const vacuumMs = Date.now() - t0;
+
+      const sizeAfter = (() => {
+        try { return fs.statSync(DB_PATH).size; } catch { return 0; }
+      })();
+
+      sendJson(res, 200, {
+        dryRun: false,
+        matched,
+        deleted,
+        sizeBefore,
+        sizeAfter,
+        bytesFreed: sizeBefore - sizeAfter,
+        vacuumMs,
+      });
+    } catch (e) {
+      console.error("[cleanup-pentest] failed", e);
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
   // ─── MCP Remote Server (Streamable HTTP) ────────────────────────────────
   // Claude and other AI agents connect here to read/edit documents.
   // Stateless mode: each POST creates a fresh server+transport.
