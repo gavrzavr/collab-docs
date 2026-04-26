@@ -266,6 +266,34 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     <div className="flex flex-col h-screen">
       <Toolbar docId={id} sessionUser={sessionUser} onImportHtml={handleImportHtml} readOnly={readOnly} isOwner={isOwner} />
 
+      {/* Read-only banner. Without this users land on /v/:token, see a normal-
+          looking editor, try to type, see nothing happen, and conclude the
+          service is broken. The banner makes the role explicit. Sits between
+          Toolbar and tab bar so it's the first thing in the content band. */}
+      {readOnly && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-center gap-2 px-4 py-2 bg-amber-50 border-b border-amber-200 text-amber-800 text-sm font-medium"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="w-4 h-4 flex-shrink-0"
+            aria-hidden="true"
+          >
+            <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+          <span>View only — read-only access</span>
+        </div>
+      )}
+
       {/* Tab bar. Rendered whenever the editor is ready so users can discover
           multi-page via the "+" affordance even on single-page docs. Hidden in
           viewer mode when there's only one page (nothing to switch between). */}
