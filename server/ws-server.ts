@@ -1453,7 +1453,7 @@ function resolvePageForMcp(
 function createMcpServer(userEmail: string | null = null): McpServer {
   const mcp = new McpServer({
     name: "PostPaper",
-    version: "0.4.2",
+    version: "0.5.0",
     instructions: MCP_INSTRUCTIONS,
   });
 
@@ -2043,6 +2043,82 @@ Pass after_block_id to place the block precisely; omit to append at the end. Mul
     }
   );
 
+  mcp.tool(
+    "list_my_documents",
+    "Lists every PostPaper document the caller has access to — ones they own AND ones shared with them as editor or commenter. Returns title, doc URL, role, owner email, and last-edited timestamp, sorted most-recent-first. Use this when the user asks: 'what docs do I have', 'what can I edit in PostPaper', 'find my doc about X', 'what's been shared with me', or wants a doc URL to paste into another conversation. NOTE: requires an authenticated MCP key — anonymous /v/:token sessions cannot list (no identity to resolve). Don't confuse with list_pages, which returns tabs WITHIN a single document.",
+    {},
+    async () => {
+      if (!userEmail) {
+        return mcpError(
+          "invalid_input",
+          "Listing your documents requires an authenticated MCP key. Mint one in the dashboard at https://postpaper.co/dashboard and add `?key=YOUR_KEY` to the MCP server URL. Anonymous viewer share-token sessions don't have an identity to resolve."
+        );
+      }
+      logEvent("mcp.list_my_documents", null, { email: maskEmail(userEmail) });
+      try {
+        const rows = db
+          .prepare(
+            `SELECT d.id, d.title, d.owner_id, d.updated_at,
+                    CASE WHEN d.owner_id = ? THEN 'owner' ELSE c.role END AS role
+               FROM documents d
+               LEFT JOIN document_collaborators c
+                      ON c.doc_id = d.id AND c.user_email = ?
+              WHERE d.owner_id = ? OR c.user_email = ?
+              ORDER BY d.updated_at DESC`
+          )
+          .all(userEmail, userEmail, userEmail, userEmail) as Array<{
+            id: string;
+            title: string | null;
+            owner_id: string | null;
+            updated_at: string;
+            role: string;
+          }>;
+
+        if (rows.length === 0) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "You don't have access to any PostPaper documents yet. Create one at https://postpaper.co/dashboard or ask a collaborator for an invite link.",
+            }],
+          };
+        }
+
+        // Cap at 100 to keep the context small. With more, surface a hint
+        // so the LLM doesn't claim authoritative completeness.
+        const HARD_CAP = 100;
+        const shown = rows.slice(0, HARD_CAP);
+        const overflow = rows.length - shown.length;
+
+        const lines: string[] = [];
+        lines.push(`Your PostPaper documents (${rows.length} total${overflow > 0 ? `, showing ${HARD_CAP}` : ""}):`);
+        lines.push("");
+        for (const r of shown) {
+          const url = `${VERCEL_URL}/doc/${r.id}`;
+          const title = r.title && r.title.trim() ? r.title : "Untitled";
+          const ownerLabel = r.role === "owner" ? "you" : (r.owner_id || "unknown");
+          lines.push(
+            `- [${r.role.toUpperCase()}] ${title}\n` +
+            `  ${url}\n` +
+            `  owner: ${ownerLabel} · last edited: ${r.updated_at}`
+          );
+        }
+        if (overflow > 0) {
+          lines.push("");
+          lines.push(`...and ${overflow} more not shown. Ask the user to refine by name/owner if they need a specific older doc.`);
+        }
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: lines.join("\n"),
+          }],
+        };
+      } catch (e) {
+        return mcpErrorFromException(e);
+      }
+    }
+  );
+
   // ─── MCP Prompt: Formatting Guide ────────────────────────────────────
   mcp.prompt(
     "formatting_guide",
@@ -2474,17 +2550,69 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /api/docs?ownerId=xxx — list documents by owner
+  // GET /api/me/docs — list "my" documents resolved from an MCP API key.
+  //
+  // Header: x-api-key: <plaintext-mcp-key>. Used by the legacy stdio MCP
+  // (mcp-server/) to give Claude Code (CLI) access to list_my_documents
+  // without having to set up Next.js cookies. The HTTP MCP at /mcp does
+  // its own auth via ?key= and goes straight through createMcpServer.
+  if (req.method === "GET" && pathname === "/api/me/docs") {
+    const apiKey = req.headers["x-api-key"];
+    if (typeof apiKey !== "string" || !apiKey) {
+      sendJson(res, 401, { error: "x-api-key header required" });
+      return;
+    }
+    const email = lookupMcpKey(apiKey);
+    if (!email) {
+      sendJson(res, 401, { error: "invalid or revoked MCP key" });
+      return;
+    }
+    const rows = db
+      .prepare(
+        `SELECT d.id, d.title, d.owner_id, d.created_at, d.updated_at,
+                CASE WHEN d.owner_id = ? THEN 'owner' ELSE c.role END AS role
+           FROM documents d
+           LEFT JOIN document_collaborators c
+                  ON c.doc_id = d.id AND c.user_email = ?
+          WHERE d.owner_id = ? OR c.user_email = ?
+          ORDER BY d.updated_at DESC`
+      )
+      .all(email, email, email, email);
+    sendJson(res, 200, { documents: rows });
+    return;
+  }
+
+  // GET /api/docs?email=xxx — list every document the email has access to.
+  //
+  // Returns both owned documents AND ones the user was invited into via
+  // document_collaborators. Each row carries a `role` field: 'owner',
+  // 'editor', or 'commenter'. Sorted by updated_at DESC across both
+  // sources so the most-recently-touched doc surfaces first regardless
+  // of relationship.
+  //
+  // Backwards compat: ?ownerId=xxx is still accepted as an alias for
+  // ?email=xxx but does NOT change semantics — it still returns the
+  // collaborator union. Old callers wanting strictly owner-only docs
+  // can filter on `role === 'owner'` client-side. Cleaner than adding
+  // a flag.
   if (req.method === "GET" && pathname === "/api/docs") {
-    const ownerId = url.searchParams.get("ownerId");
-    if (!ownerId) {
-      sendJson(res, 400, { error: "Missing ownerId query parameter" });
+    const email = url.searchParams.get("email") || url.searchParams.get("ownerId");
+    if (!email) {
+      sendJson(res, 400, { error: "Missing email (or ownerId) query parameter" });
       return;
     }
 
-    const rows = db.prepare(
-      "SELECT id, title, owner_id, created_at, updated_at FROM documents WHERE owner_id = ? ORDER BY updated_at DESC"
-    ).all(ownerId);
+    const rows = db
+      .prepare(
+        `SELECT d.id, d.title, d.owner_id, d.created_at, d.updated_at,
+                CASE WHEN d.owner_id = ? THEN 'owner' ELSE c.role END AS role
+           FROM documents d
+           LEFT JOIN document_collaborators c
+                  ON c.doc_id = d.id AND c.user_email = ?
+          WHERE d.owner_id = ? OR c.user_email = ?
+          ORDER BY d.updated_at DESC`
+      )
+      .all(email, email, email, email);
 
     sendJson(res, 200, { documents: rows });
     return;

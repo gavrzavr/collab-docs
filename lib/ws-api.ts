@@ -25,16 +25,22 @@ export async function createDocumentMeta(id: string, title: string, ownerId: str
   return res.json();
 }
 
-export async function listUserDocuments(ownerId: string): Promise<{
+export async function listUserDocuments(email: string): Promise<{
   documents: Array<{
     id: string;
     title: string;
-    owner_id: string;
+    owner_id: string | null;
     created_at: string;
     updated_at: string;
+    /** 'owner' | 'editor' | 'commenter'. Set by ws-server based on whether
+     *  the email matches `documents.owner_id` or shows up in
+     *  `document_collaborators`. */
+    role: "owner" | "editor" | "commenter";
   }>;
 }> {
-  const res = await fetch(`${WS_API_URL}/api/docs?ownerId=${encodeURIComponent(ownerId)}`);
+  // The endpoint accepts both `email` (preferred) and the legacy `ownerId`
+  // alias. Either way it returns owner+collaborator rows in one list.
+  const res = await fetch(`${WS_API_URL}/api/docs?email=${encodeURIComponent(email)}`);
   return res.json();
 }
 

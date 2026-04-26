@@ -5,6 +5,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 const API_BASE_URL = process.env.API_BASE_URL || "https://postpaper.co";
+// ws-server hosts the MCP-key-authenticated endpoints. Defaults to the
+// public Railway deploy; override with WS_BASE_URL for local dev.
+const WS_BASE_URL = process.env.WS_BASE_URL || "https://ws.postpaper.co";
+// Personal MCP API key, minted in the dashboard. Required only by tools
+// that need to know who the caller is (currently: list_my_documents).
+const MCP_API_KEY = process.env.MCP_API_KEY || "";
 
 function extractDocId(docUrl: string): string {
   // Accept full URL like http://host/doc/abc123 or just the ID
@@ -16,7 +22,7 @@ function extractDocId(docUrl: string): string {
 
 const server = new McpServer({
   name: "collab-docs",
-  version: "0.2.0",
+  version: "0.3.0",
 });
 
 server.tool(
@@ -148,6 +154,82 @@ server.tool(
           },
         ],
       };
+    } catch (err) {
+      return {
+        content: [{ type: "text" as const, text: `Network error: ${err}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "list_my_documents",
+  "Lists every PostPaper document the caller has access to — ones they own AND ones shared with them as editor or commenter. Returns title, doc URL, role, owner email, and last-edited timestamp, sorted most-recent-first. Use this when the user asks: 'what docs do I have', 'what can I edit in PostPaper', 'find my doc about X', 'what's been shared with me', or wants a doc URL to paste into another conversation. Requires MCP_API_KEY in the env (mint one at https://postpaper.co/dashboard). Don't confuse with list_pages, which returns tabs WITHIN a single document.",
+  {},
+  async () => {
+    if (!MCP_API_KEY) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: "list_my_documents requires MCP_API_KEY in the environment. Mint a key at https://postpaper.co/dashboard, then add it to your MCP server config (e.g. `\"env\": { \"MCP_API_KEY\": \"...\" }` in claude_desktop_config.json).",
+        }],
+        isError: true,
+      };
+    }
+    try {
+      const res = await fetch(`${WS_BASE_URL}/api/me/docs`, {
+        headers: { "x-api-key": MCP_API_KEY },
+      });
+      if (!res.ok) {
+        const err = await res.text().catch(() => "");
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Error: ${res.status} ${res.statusText}${err ? ` — ${err.slice(0, 200)}` : ""}`,
+          }],
+          isError: true,
+        };
+      }
+      const data = (await res.json()) as {
+        documents: Array<{
+          id: string;
+          title: string | null;
+          owner_id: string | null;
+          updated_at: string;
+          role: "owner" | "editor" | "commenter";
+        }>;
+      };
+      const rows = data.documents || [];
+      if (rows.length === 0) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: "You don't have access to any PostPaper documents yet. Create one at https://postpaper.co/dashboard or ask a collaborator for an invite link.",
+          }],
+        };
+      }
+      const HARD_CAP = 100;
+      const shown = rows.slice(0, HARD_CAP);
+      const overflow = rows.length - shown.length;
+      const lines: string[] = [];
+      lines.push(`Your PostPaper documents (${rows.length} total${overflow > 0 ? `, showing ${HARD_CAP}` : ""}):`);
+      lines.push("");
+      for (const r of shown) {
+        const url = `${API_BASE_URL}/doc/${r.id}`;
+        const title = r.title && r.title.trim() ? r.title : "Untitled";
+        const ownerLabel = r.role === "owner" ? "you" : (r.owner_id || "unknown");
+        lines.push(
+          `- [${r.role.toUpperCase()}] ${title}\n` +
+          `  ${url}\n` +
+          `  owner: ${ownerLabel} · last edited: ${r.updated_at}`
+        );
+      }
+      if (overflow > 0) {
+        lines.push("");
+        lines.push(`...and ${overflow} more not shown.`);
+      }
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     } catch (err) {
       return {
         content: [{ type: "text" as const, text: `Network error: ${err}` }],

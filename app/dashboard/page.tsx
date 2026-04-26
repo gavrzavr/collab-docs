@@ -8,7 +8,15 @@ interface DocMeta {
   id: string;
   title: string;
   updated_at: string;
+  owner_id: string | null;
+  role: "owner" | "editor" | "commenter";
 }
+
+const ROLE_CHIP: Record<DocMeta["role"], { label: string; classes: string }> = {
+  owner: { label: "Owner", classes: "bg-gray-100 text-gray-600" },
+  editor: { label: "Shared · Editor", classes: "bg-blue-50 text-blue-700" },
+  commenter: { label: "Shared · Commenter", classes: "bg-purple-50 text-purple-700" },
+};
 
 function timeAgo(dateStr: string): string {
   const now = new Date();
@@ -155,18 +163,33 @@ export default function DashboardPage() {
         ) : (
           /* Document grid */
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {docs.map((doc) => (
-              <button
-                key={doc.id}
-                onClick={() => router.push(`/doc/${doc.id}`)}
-                className="text-left p-5 bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all"
-              >
-                <h3 className="font-medium text-gray-900 mb-2 truncate">
-                  {doc.title || "Untitled"}
-                </h3>
-                <p className="text-xs text-gray-400">{timeAgo(doc.updated_at)}</p>
-              </button>
-            ))}
+            {docs.map((doc) => {
+              const chip = ROLE_CHIP[doc.role];
+              return (
+                <button
+                  key={doc.id}
+                  onClick={() => router.push(`/doc/${doc.id}`)}
+                  className="text-left p-5 bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all"
+                >
+                  <h3 className="font-medium text-gray-900 mb-2 truncate">
+                    {doc.title || "Untitled"}
+                  </h3>
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide ${chip.classes}`}
+                    >
+                      {chip.label}
+                    </span>
+                    <span className="text-xs text-gray-400">{timeAgo(doc.updated_at)}</span>
+                  </div>
+                  {doc.role !== "owner" && doc.owner_id && (
+                    <p className="text-xs text-gray-400 mt-2 truncate">
+                      from {doc.owner_id}
+                    </p>
+                  )}
+                </button>
+              );
+            })}
           </div>
         )}
       </main>
