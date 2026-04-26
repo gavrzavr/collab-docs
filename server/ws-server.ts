@@ -3030,6 +3030,112 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /api/admin/cleanup-orphan-anons — delete every owner_id-NULL row.
+  //
+  // After the auth gate on POST /api/v1/docs (2026-04-26) no new anon
+  // documents can be created. Every owner_id-NULL row in `documents` is
+  // therefore either pre-migration legacy or accumulated spam — both
+  // unreachable through the UI (/doc/:id requires sign-in, ACL has no
+  // owner). Safe to nuke wholesale.
+  //
+  // This is broader than cleanup-spam (which only matched title='spam-N').
+  // Body: { dryRun?: boolean }.
+  if (req.method === "POST" && pathname === "/api/admin/cleanup-orphan-anons") {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    } else {
+      sendJson(res, 503, { error: "INTERNAL_SECRET is not configured" });
+      return;
+    }
+
+    try {
+      const body = await parseBody(req).catch(() => ({}));
+      const dryRun = (body as { dryRun?: boolean }).dryRun === true;
+
+      const where = `owner_id IS NULL`;
+
+      const matched = (
+        db.prepare(`SELECT COUNT(*) AS n FROM documents WHERE ${where}`).get() as { n: number }
+      ).n;
+
+      const sample = db
+        .prepare(
+          `SELECT id, title, created_at FROM documents WHERE ${where} ORDER BY created_at DESC LIMIT 15`
+        )
+        .all();
+
+      const sizeBefore = (() => {
+        try { return fs.statSync(DB_PATH).size; } catch { return 0; }
+      })();
+
+      if (dryRun) {
+        sendJson(res, 200, { dryRun: true, matched, sample, sizeBefore });
+        return;
+      }
+
+      const matchedIds = (
+        db.prepare(`SELECT id FROM documents WHERE ${where}`).all() as Array<{ id: string }>
+      ).map((r) => r.id);
+
+      const deleted = db.transaction(() => {
+        const a = db.prepare(`DELETE FROM documents WHERE ${where}`).run();
+        let b = 0, c = 0, d = 0, e = 0;
+        const BATCH = 500;
+        for (let i = 0; i < matchedIds.length; i += BATCH) {
+          const slice = matchedIds.slice(i, i + BATCH);
+          const placeholders = slice.map(() => "?").join(",");
+          b += db
+            .prepare(`DELETE FROM yjs_documents WHERE doc_id IN (${placeholders})`)
+            .run(...slice).changes;
+          c += db
+            .prepare(`DELETE FROM events WHERE doc_id IN (${placeholders})`)
+            .run(...slice).changes;
+          d += db
+            .prepare(`DELETE FROM share_tokens WHERE doc_id IN (${placeholders})`)
+            .run(...slice).changes;
+          e += db
+            .prepare(`DELETE FROM document_collaborators WHERE doc_id IN (${placeholders})`)
+            .run(...slice).changes;
+        }
+        return {
+          documents: a.changes,
+          yjs_documents: b,
+          events: c,
+          share_tokens: d,
+          document_collaborators: e,
+        };
+      })();
+
+      const t0 = Date.now();
+      db.exec("VACUUM");
+      const vacuumMs = Date.now() - t0;
+      db.pragma("wal_checkpoint(TRUNCATE)");
+
+      const sizeAfter = (() => {
+        try { return fs.statSync(DB_PATH).size; } catch { return 0; }
+      })();
+
+      sendJson(res, 200, {
+        dryRun: false,
+        matched,
+        deleted,
+        sizeBefore,
+        sizeAfter,
+        bytesFreed: sizeBefore - sizeAfter,
+        vacuumMs,
+      });
+    } catch (e) {
+      console.error("[cleanup-orphan-anons] failed", e);
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
   // POST /api/admin/cleanup-spam — delete the bulk anon spam rows.
   //
   // Distinct from cleanup-pentest: pentest matches by id-prefix, but the
