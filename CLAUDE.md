@@ -106,6 +106,50 @@ AI agent, not UI chrome.
 - **Don't** put Russian (or any non-English) strings into UI components.
   See "UI language" above.
 
+## Release checklist
+
+After shipping any user-visible change (new MCP tool, new feature,
+changed behavior, deprecation), DO TWO THINGS before considering the
+work done. Skipping these is the difference between "feature shipped"
+and "feature discoverable."
+
+### 1. Update `lib/release-notes.ts` — only for MCP-surface changes
+
+Required when the change is observable through the MCP tool surface —
+new tool, removed tool, changed tool behavior or description. Skip for
+pure UI- or REST-only changes.
+
+- Bump `MCP_SERVER_VERSION` (semver: minor for new tools, patch for
+  bugfixes, major for breaking).
+- Add a `RELEASE_NOTES` entry written **for the end user** — what they
+  can do that they couldn't before. Not "added X function" — write
+  "ask Claude to X."
+
+That single diff updates two surfaces simultaneously: the in-Claude
+hint (`server/ws-server.ts` injects on first authenticated tool call
+after a bump) AND the dashboard banner
+(`app/dashboard/page.tsx` reads the same map).
+
+### 2. Update the project documentation doc
+
+Doc ID: `rUYNEJ_qBV` ("PostPaper — внутренняя документация проекта").
+Required for EVERY user-observable change AND every internal
+architectural decision worth remembering (incidents, quirks, gotchas).
+
+- Use surgical `insert_block` / `update_block` — never
+  `edit_document(replace)`.
+- Common landing sections:
+  - §2 «Основные фичи» — new user-visible features
+  - §3 «Критические особенности» — hard-won quirks, BlockNote/Yjs gotchas
+  - §6 «REST API» — new endpoints
+  - §7 «Структура репозитория» — new files
+  - §9 «Деплой» — operational changes (admin endpoints, infra notes)
+  - §10 «Do/Don't» — rules learned from incidents
+  - §12 «Что дальше» — backlog items
+
+When unsure whether something deserves doc, lean toward yes. Cost is
+a paragraph. Benefit is no future agent rediscovering the same trap.
+
 ## Legacy code
 
 `mcp-server/` is an **older** stdio MCP that wraps the REST API. It's not
