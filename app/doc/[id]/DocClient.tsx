@@ -274,7 +274,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         <div
           role="status"
           aria-live="polite"
-          className="flex items-center gap-2 px-4 py-2 bg-amber-50 border-b border-amber-200 text-amber-800 text-sm font-medium"
+          className="flex items-center justify-center gap-2 px-4 py-2 bg-amber-50 border-b border-amber-200 text-amber-800 text-sm font-medium"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -290,7 +290,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
             <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
             <circle cx="12" cy="12" r="3" />
           </svg>
-          <span>View only — read-only access</span>
+          <span>Read-only access</span>
         </div>
       )}
 
