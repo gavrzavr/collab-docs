@@ -21,6 +21,10 @@ import {
   verifySessionToken,
   BRIDGE_SUBJECT,
 } from "../lib/session-jwt";
+import {
+  MCP_SERVER_VERSION,
+  notesNewerThan,
+} from "../lib/release-notes";
 
 const PORT = Number(process.env.PORT) || Number(process.env.WS_PORT) || 1234;
 // On Railway with a Volume mounted at /app/data, use that for persistence.
@@ -126,6 +130,21 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_mcp_keys_key ON mcp_keys (key);
 `);
+
+// ─── Migration: mcp_keys.last_seen_server_version ────────────────────
+//
+// Tracks which MCP version this user's MCP client was last running with.
+// On every authenticated tool call we compare to MCP_SERVER_VERSION; if
+// it's behind, we splice "what's new + reconnect instructions" into the
+// tool response so Claude sees it and tells the user. Marker advances
+// after the hint is shown so we don't spam.
+{
+  const cols = db.prepare("PRAGMA table_info(mcp_keys)").all() as Array<{ name: string }>;
+  const hasCol = cols.some((c) => c.name === "last_seen_server_version");
+  if (!hasCol) {
+    db.exec(`ALTER TABLE mcp_keys ADD COLUMN last_seen_server_version TEXT`);
+  }
+}
 
 // ─── Session auth (Next.js ↔ ws-server) ──────────────────────────────
 //
@@ -272,6 +291,66 @@ const deleteMcpKeyStmt = db.prepare(
 const touchMcpKeyStmt = db.prepare(
   "UPDATE mcp_keys SET last_used_at = datetime('now') WHERE key = ?"
 );
+
+// Reads/updates `last_seen_server_version` and returns a one-shot hint
+// listing every release the user hasn't seen yet. Marks the user as
+// caught up after returning the hint, so the next call is silent until
+// MCP_SERVER_VERSION advances again. Anonymous callers (no email) get
+// no hint — share-token sessions are one-shot anyway.
+const getLastSeenVersionStmt = db.prepare(
+  "SELECT last_seen_server_version FROM mcp_keys WHERE user_email = ?"
+);
+const setLastSeenVersionStmt = db.prepare(
+  "UPDATE mcp_keys SET last_seen_server_version = ? WHERE user_email = ?"
+);
+function buildReleaseHintIfDue(email: string | null): string | null {
+  if (!email) return null;
+  let lastSeen = "";
+  try {
+    const row = getLastSeenVersionStmt.get(email) as { last_seen_server_version: string | null } | undefined;
+    if (!row) return null; // no key row — anonymous-ish, skip
+    lastSeen = row.last_seen_server_version || "";
+  } catch {
+    return null; // best-effort — never break a tool response
+  }
+  const fresh = notesNewerThan(lastSeen);
+  // Always advance the marker so we don't query forever even when the
+  // notes list is empty for this version range.
+  try { setLastSeenVersionStmt.run(MCP_SERVER_VERSION, email); } catch { /* ignore */ }
+  if (fresh.length === 0) return null;
+  const lines: string[] = [];
+  lines.push("");
+  lines.push("─────");
+  lines.push(`PostPaper update — what's new since you last connected:`);
+  for (const { version, note } of fresh) {
+    lines.push(`  • [v${version}] ${note}`);
+  }
+  lines.push("");
+  lines.push("If new tools don't appear in your tool list, the MCP client cached the old set — reconnect to refresh:");
+  lines.push("  • Claude.ai (web) / Desktop: Settings → Connectors → PostPaper → Disconnect → Connect again");
+  lines.push("  • Claude Code (CLI): `claude mcp remove postpaper`, then re-add");
+  return lines.join("\n");
+}
+
+// Append the hint to a tool response without disturbing its structure.
+// If the response is an error or has no text payload, leave it alone —
+// errors are noisy enough already.
+type McpToolResult = {
+  content: Array<{ type: string; text?: string } & Record<string, unknown>>;
+  isError?: boolean;
+};
+function appendReleaseHint<T extends McpToolResult>(result: T, email: string | null): T {
+  if (result.isError) return result;
+  const hint = buildReleaseHintIfDue(email);
+  if (!hint) return result;
+  const first = result.content?.[0];
+  if (first && first.type === "text" && typeof first.text === "string") {
+    first.text = first.text + "\n" + hint;
+  } else {
+    result.content.push({ type: "text", text: hint.trimStart() });
+  }
+  return result;
+}
 
 function mintMcpKey(email: string): { key: string; createdAt: string } {
   // 32 random bytes, base64url (no padding) — roughly 43 chars.
@@ -1472,7 +1551,25 @@ function createMcpServer(userEmail: string | null = null): McpServer {
     }
   };
 
-  mcp.tool(
+  // Wrapper around mcp.tool() that splices "what's new + reconnect"
+  // hints into the response when the caller's MCP client is behind
+  // MCP_SERVER_VERSION. The hint shows once per (user, version) pair —
+  // see buildReleaseHintIfDue for details. Wrapping at the registration
+  // site means we don't have to touch every tool's return statement.
+  type ToolHandler = (args: never) => Promise<McpToolResult> | McpToolResult;
+  const registerTool = (
+    name: string,
+    description: string,
+    schema: Parameters<typeof mcp.tool>[2],
+    handler: ToolHandler
+  ) => {
+    mcp.tool(name, description, schema, (async (args: never) => {
+      const result = await handler(args);
+      return appendReleaseHint(result, userEmail);
+    }) as Parameters<typeof mcp.tool>[3]);
+  };
+
+  registerTool(
     "read_document",
     "Read one page of a PostPaper document. This is a live, multi-user, block-based editor: each block has a stable ID and is an independent unit of meaning. ALWAYS call this before editing — returns blocks with IDs so you can make surgical edits via update_block / insert_block / delete_block (preferred) instead of rewriting. A document can have multiple pages (Excel-style tabs) — without a page argument you get the first one. Use list_pages to discover other pages; pass their id or title via 'page' to read a specific tab. Core mindset: think in blocks, not pages; one idea per block; headings are navigation, not decoration; preserve collaborators' work — do not touch blocks unrelated to the task.",
     {
@@ -1542,7 +1639,7 @@ function createMcpServer(userEmail: string | null = null): McpServer {
     }
   );
 
-  mcp.tool(
+  registerTool(
     "edit_document",
     "Append (or replace) markdown content on ONE page of a PostPaper document. Each line becomes one block; prefix sets type — no prefix = paragraph, # = heading, - = bullet, 1. = numbered, - [ ] = task. Inline: **bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url). For targeted edits ALWAYS prefer update_block / insert_block / delete_block — they preserve block IDs and don't disturb other collaborators. mode='replace' is a last resort; never use it unless the user explicitly asks to rewrite the whole page. For tables use create_table. For colors, write content first, then update_block with text_color/background_color. Pass 'page' to target a specific tab — omit to write to the first page. If the content would make the page very long and splits naturally into distinct topics, consider create_page + edit_document to put the new section on its own tab instead.",
     {
@@ -1583,7 +1680,7 @@ function createMcpServer(userEmail: string | null = null): McpServer {
     }
   );
 
-  mcp.tool(
+  registerTool(
     "update_block",
     "Edit ONE block by ID — the preferred tool for targeted changes. Preserves the block's identity (other editors' cursors and references stay valid) and leaves unrelated blocks untouched. Use read_document first to get IDs. For multiple changes, call update_block multiple times rather than rewriting via edit_document. Supports inline formatting (**bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url)), text/background color, alignment, type change, and heading level. Multi-page docs: pass the same 'page' argument you used with read_document — block IDs are scoped to one page.",
     {
@@ -1651,7 +1748,7 @@ function createMcpServer(userEmail: string | null = null): McpServer {
     }
   );
 
-  mcp.tool(
+  registerTool(
     "delete_block",
     "Delete ONE block by ID. Only delete blocks that are clearly part of the requested change — other humans and agents may be editing in parallel, so do not delete blocks you did not author unless the user explicitly asks. Use read_document first to get IDs. Multi-page docs: pass the same 'page' argument you used with read_document.",
     {
@@ -1686,7 +1783,7 @@ function createMcpServer(userEmail: string | null = null): McpServer {
     }
   );
 
-  mcp.tool(
+  registerTool(
     "insert_block",
     "Insert ONE new block immediately after a given block ID. Prefer this over edit_document when adding content between existing blocks; use edit_document(mode='append') only to append at the end. One idea per block — the first line should carry the gist so scanners get the point. Supports inline formatting (**bold**, *italic*, `code`, ~~strike~~, __underline__, [text](url)), text/background color, alignment, type, and heading level. Multi-page docs: pass the same 'page' argument you used with read_document — block IDs are page-scoped.",
     {
@@ -1729,7 +1826,7 @@ function createMcpServer(userEmail: string | null = null): McpServer {
     }
   );
 
-  mcp.tool(
+  registerTool(
     "create_table",
     "Insert a table. Use for genuinely tabular or comparative data (schedules, comparisons, specs, pricing). Do NOT use when a short list would suffice — tables are visually heavy. Provide rows as a 2D array; first row is the header. Cells support inline formatting (**bold**, *italic*, [text](url), etc.). Pass after_block_id to place precisely; omit to append at the end. Multi-page docs: pass the same 'page' argument you used with read_document.",
     {
@@ -1776,7 +1873,7 @@ function createMcpServer(userEmail: string | null = null): McpServer {
     }
   );
 
-  mcp.tool(
+  registerTool(
     "create_html_block",
     `Insert an "interactive block" — a self-contained HTML fragment rendered in a sandboxed iframe. Use this for data visualizations the user would otherwise have to describe in words: charts, dashboards, workout diagrams, timelines, comparison widgets, SVG/Canvas illustrations with hover interactions, small calculators.
 
@@ -1840,7 +1937,7 @@ Pass after_block_id to place the block precisely; omit to append at the end. Mul
     }
   );
 
-  mcp.tool(
+  registerTool(
     "update_html_block",
     "Replace the HTML content of an existing interactive block (created by create_html_block), preserving its block ID. Use this to iterate on a visualization — fixing a bug, adjusting styling, adding data points — without disturbing the surrounding document. Only accepts blocks that are already interactive blocks; to convert another block type, delete_block + create_html_block instead. Same 100 KB limit and sandbox rules as create_html_block.",
     {
@@ -1897,7 +1994,7 @@ Pass after_block_id to place the block precisely; omit to append at the end. Mul
 
   // ─── Page-management tools ──────────────────────────────────────────
 
-  mcp.tool(
+  registerTool(
     "list_pages",
     "List all pages (tabs) in a PostPaper document with their IDs and titles. Use this to discover the structure of a multi-page document before reading or editing. The first page in the list is the default target when you omit 'page' on other tools. A single-page document returns exactly one entry.",
     {
@@ -1929,7 +2026,7 @@ Pass after_block_id to place the block precisely; omit to append at the end. Mul
     }
   );
 
-  mcp.tool(
+  registerTool(
     "create_page",
     "Create a new page (tab) in a PostPaper document and return its ID. CALL THIS DIRECTLY when the user asks for a new page/tab/section — do not ask for confirmation, just do it and report the result. You may also use it autonomously when organizing content: if the user asks for a large deliverable that naturally splits into distinct topics (e.g. separating 'API reference' from 'Changelog' from 'Roadmap'), create the tabs first, then populate them. Avoid creating pages for continuations of a single narrative, for every small section, or just because a page is getting long — those belong in headings on the current page. The title becomes the tab label (short noun phrase, ≤40 chars works best). After creation, pass the returned page id or the title to edit_document to populate it.",
     {
@@ -1962,7 +2059,7 @@ Pass after_block_id to place the block precisely; omit to append at the end. Mul
     }
   );
 
-  mcp.tool(
+  registerTool(
     "rename_page",
     "Rename a page (tab) in a PostPaper document. CALL THIS DIRECTLY when the user asks to rename a tab — do not ask for confirmation, just do it. Accepts either the page's current ID or its exact current title. Don't rename pages unrelated to the task as a side effect (e.g. don't 'clean up' titles the user didn't ask about).",
     {
@@ -2000,7 +2097,7 @@ Pass after_block_id to place the block precisely; omit to append at the end. Mul
     }
   );
 
-  mcp.tool(
+  registerTool(
     "delete_page",
     "Delete a page (tab) and all its blocks. CALL THIS DIRECTLY when the user asks to delete/remove a tab — do not ask for confirmation, just do it. Accepts the page ID or exact current title. Rules: (1) a document must keep at least one page — attempting to delete the only page returns an error; (2) don't delete pages the user did NOT ask about, even if they look empty or orphaned — other collaborators may be using them. Deletion cannot be undone through MCP; if the user asks to 'clear' or 'empty' a page rather than remove the tab, prefer edit_document(mode=\"replace\", content=\"\") instead.",
     {
@@ -2043,7 +2140,7 @@ Pass after_block_id to place the block precisely; omit to append at the end. Mul
     }
   );
 
-  mcp.tool(
+  registerTool(
     "list_my_documents",
     "Lists every PostPaper document the caller has access to — ones they own AND ones shared with them as editor or commenter. Returns title, doc URL, role, owner email, and last-edited timestamp, sorted most-recent-first. Use this when the user asks: 'what docs do I have', 'what can I edit in PostPaper', 'find my doc about X', 'what's been shared with me', or wants a doc URL to paste into another conversation. NOTE: requires an authenticated MCP key — anonymous /v/:token sessions cannot list (no identity to resolve). Don't confuse with list_pages, which returns tabs WITHIN a single document.",
     {},

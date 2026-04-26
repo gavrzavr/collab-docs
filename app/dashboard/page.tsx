@@ -3,6 +3,9 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import McpKeyPanel from "@/components/McpKeyPanel";
+import { MCP_SERVER_VERSION, notesNewerThan } from "@/lib/release-notes";
+
+const SEEN_VERSION_KEY = "postpaper:dashboard:seen-version";
 
 interface DocMeta {
   id: string;
@@ -36,6 +39,24 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [user, setUser] = useState<{ name: string; email: string; image?: string } | null>(null);
+  // What's-new banner state. Only shown if the user has unseen release
+  // notes, dismissable in one click. Mirrors the MCP-server hint that
+  // gets injected into Claude's tool responses — same content, same
+  // source of truth (lib/release-notes.ts), different surface.
+  const [unseenNotes, setUnseenNotes] = useState<Array<{ version: string; note: string }>>([]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const lastSeen = window.localStorage.getItem(SEEN_VERSION_KEY) || "";
+    setUnseenNotes(notesNewerThan(lastSeen));
+  }, []);
+
+  function dismissReleaseBanner() {
+    try {
+      window.localStorage.setItem(SEEN_VERSION_KEY, MCP_SERVER_VERSION);
+    } catch { /* Safari private mode etc. — fine */ }
+    setUnseenNotes([]);
+  }
 
   useEffect(() => {
     // Fetch session
@@ -142,6 +163,40 @@ export default function DashboardPage() {
 
       {/* Main content */}
       <main className="max-w-4xl mx-auto px-6 py-10">
+        {/* What's-new banner. Shows once after each MCP-server bump,
+            until dismissed. Tells the user new tools are available and
+            how to refresh their MCP client to see them. */}
+        {unseenNotes.length > 0 && (
+          <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <h3 className="text-sm font-semibold text-blue-900 mb-2">
+                  What&apos;s new in PostPaper
+                </h3>
+                <ul className="space-y-1.5 text-sm text-blue-900">
+                  {unseenNotes.map(({ version, note }) => (
+                    <li key={version}>
+                      <span className="text-xs font-medium text-blue-700 mr-1">v{version}</span>
+                      {note}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-3 text-xs text-blue-800">
+                  If new tools don&apos;t appear in your MCP client, reconnect to refresh the tool list:
+                  Claude.ai (web/Desktop) → <em>Settings → Connectors → PostPaper → Disconnect → Connect</em>;
+                  Claude Code (CLI) → <code className="bg-blue-100 px-1 rounded">claude mcp remove postpaper</code> then re-add.
+                </p>
+              </div>
+              <button
+                onClick={dismissReleaseBanner}
+                aria-label="Dismiss"
+                className="flex-shrink-0 px-2 py-1 text-blue-700 hover:bg-blue-100 rounded text-sm font-medium"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        )}
         {user && <McpKeyPanel />}
         {loading ? (
           <div className="text-center text-gray-400 py-20">Loading documents...</div>
