@@ -3030,6 +3030,124 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /api/admin/cleanup-spam — delete the bulk anon spam rows.
+  //
+  // Distinct from cleanup-pentest: pentest matches by id-prefix, but the
+  // 2026-04-22/2026-04-26 spam attacks used real nanoid ids — the only
+  // marker is `title='spam-N'` + `owner_id IS NULL`. We refuse to touch
+  // any row with a non-null owner so a single misclick can't hit a real
+  // user's doc.
+  //
+  // Body: { dryRun?: boolean }. Same shape as cleanup-pentest.
+  if (req.method === "POST" && pathname === "/api/admin/cleanup-spam") {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    } else {
+      sendJson(res, 503, { error: "INTERNAL_SECRET is not configured" });
+      return;
+    }
+
+    try {
+      const body = await parseBody(req).catch(() => ({}));
+      const dryRun = (body as { dryRun?: boolean }).dryRun === true;
+
+      // Hard guard: anonymous rows ONLY. Title pattern is loose enough to
+      // cover any future "spam-NNNN" variant but tight enough not to catch
+      // real titles that happen to start with the word "spam" — those would
+      // need a typed user behind them, which the owner_id NULL check rules
+      // out.
+      const where = `owner_id IS NULL AND title LIKE 'spam-%'`;
+
+      const matched = (
+        db.prepare(`SELECT COUNT(*) AS n FROM documents WHERE ${where}`).get() as { n: number }
+      ).n;
+
+      const sample = db
+        .prepare(
+          `SELECT id, title, created_at FROM documents WHERE ${where} ORDER BY created_at DESC LIMIT 10`
+        )
+        .all();
+
+      const sizeBefore = (() => {
+        try { return fs.statSync(DB_PATH).size; } catch { return 0; }
+      })();
+
+      if (dryRun) {
+        sendJson(res, 200, { dryRun: true, matched, sample, sizeBefore });
+        return;
+      }
+
+      // Cascade-delete from all tables that reference doc_id, scoped to
+      // ids we actually matched (so the doc_id LIKE/IN doesn't widen).
+      const matchedIds = db
+        .prepare(`SELECT id FROM documents WHERE ${where}`)
+        .all() as Array<{ id: string }>;
+      const ids = matchedIds.map((r) => r.id);
+
+      const deleted = db.transaction(() => {
+        const a = db.prepare(`DELETE FROM documents WHERE ${where}`).run();
+        let b = 0, c = 0, d = 0, e = 0;
+        if (ids.length > 0) {
+          // SQLite limits parameter count (~999 by default), so batch.
+          const BATCH = 500;
+          for (let i = 0; i < ids.length; i += BATCH) {
+            const slice = ids.slice(i, i + BATCH);
+            const placeholders = slice.map(() => "?").join(",");
+            b += db
+              .prepare(`DELETE FROM yjs_documents WHERE doc_id IN (${placeholders})`)
+              .run(...slice).changes;
+            c += db
+              .prepare(`DELETE FROM events WHERE doc_id IN (${placeholders})`)
+              .run(...slice).changes;
+            d += db
+              .prepare(`DELETE FROM share_tokens WHERE doc_id IN (${placeholders})`)
+              .run(...slice).changes;
+            e += db
+              .prepare(`DELETE FROM document_collaborators WHERE doc_id IN (${placeholders})`)
+              .run(...slice).changes;
+          }
+        }
+        return {
+          documents: a.changes,
+          yjs_documents: b,
+          events: c,
+          share_tokens: d,
+          document_collaborators: e,
+        };
+      })();
+
+      // VACUUM to release pages back to filesystem; followed by a WAL
+      // truncate because VACUUM rewrites the whole DB through WAL.
+      const t0 = Date.now();
+      db.exec("VACUUM");
+      const vacuumMs = Date.now() - t0;
+      db.pragma("wal_checkpoint(TRUNCATE)");
+
+      const sizeAfter = (() => {
+        try { return fs.statSync(DB_PATH).size; } catch { return 0; }
+      })();
+
+      sendJson(res, 200, {
+        dryRun: false,
+        matched,
+        deleted,
+        sizeBefore,
+        sizeAfter,
+        bytesFreed: sizeBefore - sizeAfter,
+        vacuumMs,
+      });
+    } catch (e) {
+      console.error("[cleanup-spam] failed", e);
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
   // GET /api/admin/docs-summary — diagnostic counts of `documents`.
   //
   // Used to investigate id-prefix patterns of bulk anonymous inserts

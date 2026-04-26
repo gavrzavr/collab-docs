@@ -5,6 +5,25 @@ import { createDocumentMeta } from "@/lib/ws-api";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
+  // Require an authenticated session.
+  //
+  // Anonymous creation used to be allowed (a guest doc with owner_id=NULL).
+  // After the owner+invited migration (§14 in the project doc) those guest
+  // docs became unreachable — /doc/:id requires sign-in, ACL has no owner,
+  // every visitor lands on "No access". So the endpoint did nothing useful
+  // for real users while letting any unauthenticated client batch-create
+  // thousands of empty rows. Two attacks happened so far (1545 spam docs
+  // on 2026-04-22 and 8184 on 2026-04-26 in 4 minutes — that's ~30 ins/sec
+  // with title="spam-N"). Closing the door is the right move.
+  const session = await auth().catch(() => null);
+  if (!session?.user?.email) {
+    return Response.json(
+      { error: "Sign in to create a document." },
+      { status: 401 }
+    );
+  }
+  const ownerId = session.user.email;
+
   const id = nanoid(10);
   let title = "Untitled";
 
@@ -13,17 +32,6 @@ export async function POST(request: Request) {
     if (body.title) title = body.title;
   } catch {
     // No body or invalid JSON — that's fine
-  }
-
-  // If user is authenticated, set owner
-  let ownerId: string | null = null;
-  try {
-    const session = await auth();
-    if (session?.user?.email) {
-      ownerId = session.user.email;
-    }
-  } catch {
-    // Not authenticated — that's fine, guest doc
   }
 
   // Register document metadata on WS server.
