@@ -3030,6 +3030,79 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /api/admin/docs-summary — diagnostic counts of `documents`.
+  //
+  // Used to investigate id-prefix patterns of bulk anonymous inserts
+  // (the pentest spikes on 22.04 and 26.04). Returns:
+  //   - total docs
+  //   - count grouped by owner_id (null vs known) and by created date
+  //   - a small sample of ids per bucket so we can see naming conventions
+  // Read-only, no side effects.
+  if (req.method === "GET" && pathname === "/api/admin/docs-summary") {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    } else {
+      sendJson(res, 503, { error: "INTERNAL_SECRET is not configured" });
+      return;
+    }
+
+    try {
+      const total = (db.prepare("SELECT COUNT(*) AS n FROM documents").get() as { n: number }).n;
+
+      const byOwner = db
+        .prepare(
+          `SELECT
+             CASE WHEN owner_id IS NULL THEN '(null)' ELSE 'known' END AS bucket,
+             COUNT(*) AS n
+           FROM documents
+           GROUP BY bucket`
+        )
+        .all() as Array<{ bucket: string; n: number }>;
+
+      const byDate = db
+        .prepare(
+          `SELECT DATE(created_at) AS day, COUNT(*) AS n
+           FROM documents
+           GROUP BY day
+           ORDER BY day DESC
+           LIMIT 10`
+        )
+        .all() as Array<{ day: string; n: number }>;
+
+      // Sample 30 random ids from anonymous docs created in last 2 days
+      const recentAnonSample = db
+        .prepare(
+          `SELECT id, title, created_at FROM documents
+           WHERE owner_id IS NULL
+             AND created_at >= datetime('now', '-2 days')
+           ORDER BY RANDOM()
+           LIMIT 30`
+        )
+        .all() as Array<{ id: string; title: string; created_at: string }>;
+
+      // Frequency of id length to spot patterns (10-char nanoid vs longer)
+      const idLengthHistogram = db
+        .prepare(
+          `SELECT LENGTH(id) AS len, COUNT(*) AS n
+           FROM documents
+           GROUP BY len
+           ORDER BY n DESC
+           LIMIT 10`
+        )
+        .all() as Array<{ len: number; n: number }>;
+
+      sendJson(res, 200, { total, byOwner, byDate, recentAnonSample, idLengthHistogram });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
   // POST /api/admin/delete-backup — remove one of the SQLite backup
   // files in DATA_DIR. Body: { name: "collab-docs-backup-prev.db" }.
   // Only accepts file names matching ^collab-docs-backup(-prev)?\.db$
