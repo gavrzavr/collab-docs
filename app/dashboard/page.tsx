@@ -44,6 +44,11 @@ export default function DashboardPage() {
   // gets injected into Claude's tool responses — same content, same
   // source of truth (lib/release-notes.ts), different surface.
   const [unseenNotes, setUnseenNotes] = useState<Array<{ version: string; note: string }>>([]);
+  // Banner starts collapsed — feedback was that the expanded list was
+  // eating the entire mobile viewport and pushing the actual dashboard
+  // (doc cards) below the fold. Dashboard is the primary surface here;
+  // release notes are a secondary nudge.
+  const [bannerExpanded, setBannerExpanded] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -128,31 +133,39 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Top bar */}
-      <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
-        <h1 className="text-lg font-semibold">PostPaper</h1>
-        <div className="flex items-center gap-4">
+      {/* Top bar — compact on mobile, comfortable on desktop. User name
+          and full "New Document" label are hidden on <sm because they
+          push the row past the viewport (avatar identifies the user
+          well enough; the black button is unmistakably "create"). */}
+      <header className="bg-white border-b border-gray-200 px-3 sm:px-6 py-3 flex items-center justify-between gap-2">
+        <h1 className="text-lg font-semibold flex-shrink-0">PostPaper</h1>
+        <div className="flex items-center gap-2 sm:gap-4">
           <button
             onClick={handleCreate}
             disabled={creating}
-            className="px-4 py-2 bg-black text-white text-sm rounded-lg font-medium hover:bg-gray-800 transition-colors disabled:opacity-50"
+            className="px-3 sm:px-4 py-2 bg-black text-white text-sm rounded-lg font-medium hover:bg-gray-800 transition-colors disabled:opacity-50 whitespace-nowrap flex-shrink-0"
           >
-            {creating ? "Creating..." : "New Document"}
+            {creating ? "Creating..." : (
+              <>
+                <span className="sm:hidden">+ New</span>
+                <span className="hidden sm:inline">New Document</span>
+              </>
+            )}
           </button>
           {user && (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3">
               {user.image && (
                 <img
                   src={user.image}
                   alt={user.name}
-                  className="w-8 h-8 rounded-full"
+                  className="w-8 h-8 rounded-full flex-shrink-0"
                   referrerPolicy="no-referrer"
                 />
               )}
-              <span className="text-sm text-gray-700">{user.name}</span>
+              <span className="hidden sm:inline text-sm text-gray-700">{user.name}</span>
               <button
                 onClick={handleSignOut}
-                className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
+                className="text-sm text-gray-400 hover:text-gray-600 transition-colors whitespace-nowrap"
               >
                 Sign Out
               </button>
@@ -167,12 +180,41 @@ export default function DashboardPage() {
             until dismissed. Tells the user new tools are available and
             how to refresh their MCP client to see them. */}
         {unseenNotes.length > 0 && (
-          <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-4">
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex-1">
-                <h3 className="text-sm font-semibold text-blue-900 mb-2">
-                  What&apos;s new in PostPaper
-                </h3>
+          <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50">
+            {/* Compact header row, always visible. Single line on mobile;
+                acts as the disclosure trigger to expand the full list. */}
+            <div className="flex items-center justify-between gap-2 px-3 py-2">
+              <button
+                onClick={() => setBannerExpanded((v) => !v)}
+                className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                aria-expanded={bannerExpanded}
+              >
+                <span className="text-sm font-semibold text-blue-900 truncate">
+                  What&apos;s new — {unseenNotes.length} update{unseenNotes.length === 1 ? "" : "s"}
+                </span>
+                <svg
+                  className={`w-4 h-4 text-blue-700 flex-shrink-0 transition-transform ${bannerExpanded ? "rotate-180" : ""}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              <button
+                onClick={dismissReleaseBanner}
+                aria-label="Dismiss"
+                className="flex-shrink-0 px-2 py-1 text-blue-700 hover:bg-blue-100 rounded text-sm font-medium"
+              >
+                Got it
+              </button>
+            </div>
+            {/* Expanded body: capped at 40vh with internal scroll so it
+                can never push the dashboard past the fold, no matter how
+                many releases are queued. */}
+            {bannerExpanded && (
+              <div className="px-3 pb-3 max-h-[40vh] overflow-y-auto border-t border-blue-200 pt-2">
                 <ul className="space-y-1.5 text-sm text-blue-900">
                   {unseenNotes.map(({ version, note }) => (
                     <li key={version}>
@@ -187,14 +229,7 @@ export default function DashboardPage() {
                   Claude Code (CLI) → <code className="bg-blue-100 px-1 rounded">claude mcp remove postpaper</code> then re-add.
                 </p>
               </div>
-              <button
-                onClick={dismissReleaseBanner}
-                aria-label="Dismiss"
-                className="flex-shrink-0 px-2 py-1 text-blue-700 hover:bg-blue-100 rounded text-sm font-medium"
-              >
-                Got it
-              </button>
-            </div>
+            )}
           </div>
         )}
         {user && <McpKeyPanel />}
