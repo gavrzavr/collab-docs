@@ -3,10 +3,16 @@
 import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
 
-import { useCreateBlockNote, FormattingToolbarController, FormattingToolbar, getFormattingToolbarItems, useBlockNoteEditor, useComponentsContext, useEditorState } from "@blocknote/react";
+import {
+  useCreateBlockNote, FormattingToolbarController, FormattingToolbar, getFormattingToolbarItems,
+  useBlockNoteEditor, useComponentsContext, useEditorState,
+  SideMenuController, SideMenu,
+  DragHandleMenu, BlockColorsItem, RemoveBlockItem,
+} from "@blocknote/react";
 import type { BlockTypeSelectItem } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
 import { createExtension } from "@blocknote/core";
+import { TurnIntoItem } from "./TurnIntoItem";
 import { RiText, RiH1, RiH2, RiH3, RiListUnordered, RiListOrdered, RiListCheck3, RiQuoteText } from "react-icons/ri";
 import * as Y from "yjs";
 import type { WebsocketProvider } from "y-websocket";
@@ -132,7 +138,7 @@ export default function Editor({ ydoc, provider, fragmentName, userName, userCol
   }, [editor, registerImportHtml]);
 
   return (
-    <BlockNoteView editor={editor} theme="light" formattingToolbar={false} editable={!readOnly}>
+    <BlockNoteView editor={editor} theme="light" formattingToolbar={false} sideMenu={false} editable={!readOnly}>
       <FormattingToolbarController
         formattingToolbar={() => {
           const defaultItems = getFormattingToolbarItems();
@@ -144,6 +150,22 @@ export default function Editor({ ydoc, provider, fragmentName, userName, userCol
             </FormattingToolbar>
           );
         }}
+      />
+      {/* Custom drag-handle menu with "Turn into" — Notion-like quick block-type switching
+          without selecting text. Default BlockNote drag-handle menu only has Delete + Colors. */}
+      <SideMenuController
+        sideMenu={(props) => (
+          <SideMenu
+            {...props}
+            dragHandleMenu={() => (
+              <DragHandleMenu>
+                <TurnIntoItem>Turn into</TurnIntoItem>
+                <RemoveBlockItem>Delete</RemoveBlockItem>
+                <BlockColorsItem>Colors</BlockColorsItem>
+              </DragHandleMenu>
+            )}
+          />
+        )}
       />
     </BlockNoteView>
   );
