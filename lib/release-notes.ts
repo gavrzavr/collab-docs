@@ -17,7 +17,7 @@
  *      both 0.5.0 and 0.6.0 notes on first call after the 0.6.0 deploy.
  */
 
-export const MCP_SERVER_VERSION = "0.6.0";
+export const MCP_SERVER_VERSION = "0.6.1";
 
 export const RELEASE_NOTES: Record<string, string> = {
   "0.5.0":
@@ -30,6 +30,8 @@ export const RELEASE_NOTES: Record<string, string> = {
     "Reverted a speculative create_table fix that broke the editor (blank screen on docs containing affected tables). Tables created via Claude during 0.5.2 may now render correctly again — refresh the doc. Ghost-columns issue from 0.5.2 release notes is back to known-issue status.",
   "0.6.0":
     "create_table ghost-columns bug FIXED. Root cause diagnosed via DevTools: cells were missing 4 schema attrs (textColor, backgroundColor, textAlignment, colwidth) and had colspan/rowspan as STRINGS instead of NUMBERS. BlockNote's normalization treated the type mismatch as 'broken cell' and recursively padded rows. Now cells match BlockNote's schema-default shape exactly. Old tables in your docs are still corrupt — ask Claude to recreate them.",
+  "0.6.1":
+    "create_table tool description cleaned up — removed the obsolete 'KNOWN ISSUE: close other tabs' warning that Claude was still reading after the v0.6.0 fix. New tables work fine with any number of open tabs. Description now also tells Claude how to repair pre-v0.6.0 broken tables (delete + recreate).",
 };
 
 /** Compares two semver-ish version strings ("a.b.c"). Returns -/0/+. */
