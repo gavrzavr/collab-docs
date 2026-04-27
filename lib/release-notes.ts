@@ -17,13 +17,15 @@
  *      both 0.5.0 and 0.6.0 notes on first call after the 0.6.0 deploy.
  */
 
-export const MCP_SERVER_VERSION = "0.5.1";
+export const MCP_SERVER_VERSION = "0.5.2";
 
 export const RELEASE_NOTES: Record<string, string> = {
   "0.5.0":
     "New tool: list_my_documents — lists every PostPaper doc you own or that's shared with you. Ask Claude 'what docs do I have access to in PostPaper?'",
   "0.5.1":
     "create_table no longer renders ghost empty columns when Claude accidentally pads rows with trailing empty cells. Tables in your docs that already have phantom columns from earlier — ask Claude to recreate them and they'll come out clean.",
+  "0.5.2":
+    "Documented a known issue with create_table: when you have the same doc open in another browser tab while Claude inserts a table, BlockNote's normalization can pad rows with ghost empty columns. Workaround: close other tabs of the doc before asking Claude to insert tables. Permanent fix is in backlog.",
 };
 
 /** Compares two semver-ish version strings ("a.b.c"). Returns -/0/+. */
