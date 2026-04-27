@@ -28,10 +28,15 @@ body {
 }
 
 /* Trim BlockNote's default 54px horizontal padding on narrow screens so
-   content doesn't break mid-word. Desktop keeps the comfy margin. */
+   content doesn't break mid-word. Desktop keeps the comfy margin.
+   Padding is asymmetric on purpose: the drag-handle (6-dot grip) is
+   positioned by BlockNote ~24px to the LEFT of the content edge, so we
+   need at least ~36-40px of left padding for the handle to be tappable
+   without sliding off the viewport. Right side has no such affordance,
+   so we keep it tight (16px) to maximize reading width. */
 @media (max-width: 767px) {
   .bn-container .ProseMirror {
-    padding-left: 16px !important;
+    padding-left: 40px !important;
     padding-right: 16px !important;
   }
 }
