@@ -1058,12 +1058,27 @@ function createTableBlock(rows: string[][]): { element: Y.XmlElement; id: string
     return [...r, ...Array(cols - r.length).fill("")];
   });
 
+  // Match BlockNote's schema-default tableCell shape EXACTLY. Diagnosed
+  // 2026-04-27 in DevTools: when we sent only colspan/rowspan as STRINGS
+  // ("1"), BlockNote's type-mismatch normalization corrupted our last
+  // cell's colspan to NUMBER 0 and recursively padded each row with
+  // extra cells (header +1, data +3+). Setting all 6 schema attrs with
+  // their canonical types stops the normalization fight.
+  // setAttribute on Y.XmlElement preserves value type (number stays
+  // number through the Yjs CRDT and arrives as number on the client).
   for (const rowData of normalized) {
     const row = new Y.XmlElement("tableRow");
     for (const cellText of rowData) {
       const cell = new Y.XmlElement("tableCell");
-      cell.setAttribute("colspan", "1");
-      cell.setAttribute("rowspan", "1");
+      // Numbers, not strings — that was the trigger.
+      cell.setAttribute("colspan", 1 as unknown as string);
+      cell.setAttribute("rowspan", 1 as unknown as string);
+      cell.setAttribute("textColor", "default");
+      cell.setAttribute("backgroundColor", "default");
+      cell.setAttribute("textAlignment", "left");
+      // colwidth defaults to null in schema; do NOT set — Y.XmlElement
+      // can't store null as an attribute, and the schema's default-null
+      // is what BlockNote-native cells produce.
       const para = new Y.XmlElement("tableParagraph");
       const hasFormatting = /(\[.+?\]\(.+?\)|\*\*.+?\*\*|\*.+?\*|~~.+?~~|`.+?`|__.+?__)/.test(cellText);
       if (hasFormatting) {
