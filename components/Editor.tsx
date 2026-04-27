@@ -6,12 +6,22 @@ import "@blocknote/mantine/style.css";
 import { useCreateBlockNote, FormattingToolbarController, FormattingToolbar, getFormattingToolbarItems, useBlockNoteEditor, useComponentsContext, useEditorState } from "@blocknote/react";
 import type { BlockTypeSelectItem } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
+import { createExtension } from "@blocknote/core";
 import { RiText, RiH1, RiH2, RiH3, RiListUnordered, RiListOrdered, RiListCheck3, RiQuoteText } from "react-icons/ri";
 import * as Y from "yjs";
 import type { WebsocketProvider } from "y-websocket";
 import { useEffect, useMemo } from "react";
 
 import { editorSchema } from "./blocknote-schema";
+import { ArrowShortcuts } from "./arrow-shortcuts";
+
+// Wrap our Tiptap extension in a BlockNote-compatible extension so the
+// schema picks it up alongside the built-in ones (sideMenu, formatting,
+// etc.). Single shared instance — extensions are stateless here.
+const arrowShortcutsExtension = createExtension({
+  key: "postpaper-arrow-shortcuts",
+  tiptapExtensions: [ArrowShortcuts],
+});
 
 interface EditorProps {
   /** The shared Y.Doc for this document. Owned by the parent (DocClient) so
@@ -88,6 +98,7 @@ export default function Editor({ ydoc, provider, fragmentName, userName, userCol
 
   const editor = useCreateBlockNote({
     schema: editorSchema,
+    extensions: [arrowShortcutsExtension],
     collaboration: {
       provider,
       fragment,
