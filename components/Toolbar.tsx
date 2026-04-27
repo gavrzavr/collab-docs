@@ -229,7 +229,7 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, is
         {shareOpen && (
           <>
             <div className="fixed inset-0 z-10" onClick={() => setShareOpen(false)} />
-            <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20 w-[340px]">
+            <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20 w-[340px] max-w-[calc(100vw-1.5rem)]">
               {/* Editor invite row — owner only. Non-owners see a hint
                   because only the owner can hand out edit permissions.
                   Explicitly labelled "a person" to disambiguate from the
@@ -341,7 +341,9 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, is
         )}
       </div>
 
-      {/* 2. Import — only when the user can actually edit this doc. */}
+      {/* 2. Import — only when the user can actually edit this doc.
+              Hidden on mobile (<sm) — .docx import is a desktop workflow,
+              keeping it on the toolbar there overflows past the viewport. */}
       {!readOnly && (
         <>
           <input
@@ -354,7 +356,7 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, is
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={importing}
-            className="px-2.5 sm:px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors disabled:opacity-50 whitespace-nowrap shrink-0"
+            className="hidden sm:inline-block px-2.5 sm:px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors disabled:opacity-50 whitespace-nowrap shrink-0"
           >
             {importing ? "Importing..." : "Import"}
           </button>
@@ -369,8 +371,11 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, is
         Connect AI
       </Link>
 
-      {/* 4. Export (dropdown) */}
-      <div className="relative shrink-0" ref={exportRef}>
+      {/* 4. Export (dropdown) — hidden on mobile (<sm), available via
+              menu only on desktop. Mobile users rarely export docs from
+              their phone, and the toolbar overflows the viewport with
+              all four buttons + avatar present. */}
+      <div className="relative shrink-0 hidden sm:block" ref={exportRef}>
         <button
           onClick={() => setExportOpen(!exportOpen)}
           className="px-2.5 sm:px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-colors flex items-center gap-1 whitespace-nowrap"
