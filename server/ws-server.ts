@@ -1058,12 +1058,21 @@ function createTableBlock(rows: string[][]): { element: Y.XmlElement; id: string
     return [...r, ...Array(cols - r.length).fill("")];
   });
 
+  // We deliberately DO NOT setAttribute("colspan"/"rowspan") here.
+  // BlockNote's prosemirror schema defaults them to 1, and Yjs string
+  // attrs ("1") don't compare equal to the schema's number default (1) —
+  // some plugins read this as "non-default" and trigger extra
+  // normalization on receive. Letting the schema fill defaults keeps
+  // attrs out of the Yjs payload entirely.
+  // We DO set colwidth on every cell so the colgroup is built from
+  // explicit values, preventing the column-count inference fight that
+  // shows up as ghost columns when an active editor client receives the
+  // table via Yjs sync.
   for (const rowData of normalized) {
     const row = new Y.XmlElement("tableRow");
     for (const cellText of rowData) {
       const cell = new Y.XmlElement("tableCell");
-      cell.setAttribute("colspan", "1");
-      cell.setAttribute("rowspan", "1");
+      cell.setAttribute("colwidth", "120");
       const para = new Y.XmlElement("tableParagraph");
       const hasFormatting = /(\[.+?\]\(.+?\)|\*\*.+?\*\*|\*.+?\*|~~.+?~~|`.+?`|__.+?__)/.test(cellText);
       if (hasFormatting) {
