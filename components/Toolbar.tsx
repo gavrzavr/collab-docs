@@ -229,7 +229,7 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, is
         {shareOpen && (
           <>
             <div className="fixed inset-0 z-10" onClick={() => setShareOpen(false)} />
-            <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20 w-[340px] max-w-[calc(100vw-1.5rem)]">
+            <div className="fixed left-3 right-3 top-[52px] mt-0 sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-1 sm:w-[340px] sm:max-w-[calc(100vw-1.5rem)] bg-white border border-gray-200 rounded-md shadow-lg z-20">
               {/* Editor invite row — owner only. Non-owners see a hint
                   because only the owner can hand out edit permissions.
                   Explicitly labelled "a person" to disambiguate from the
