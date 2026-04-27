@@ -1038,10 +1038,23 @@ function createTableBlock(rows: string[][]): { element: Y.XmlElement; id: string
 
   const table = new Y.XmlElement("table");
 
-  const cols = rows[0]?.length ?? 0;
-  const normalized = rows.map((r) => {
+  // Strip trailing empty/whitespace cells from every row before sizing.
+  // Without this, callers (notably Claude with a markdown-table mental
+  // model) sometimes include phantom empties on the right — e.g. from
+  // splitting "| a | b | c |" on "|" and keeping the trailing artifact.
+  // Those empties became real-rendered columns, leaving the user with
+  // a table that has 2 ghost columns nobody can see content in. After
+  // the trim, the widest remaining row dictates the column count.
+  const trimmed = rows.map((r) => {
+    let end = r.length;
+    while (end > 0 && (r[end - 1] === undefined || r[end - 1].trim() === "")) {
+      end--;
+    }
+    return r.slice(0, end);
+  });
+  const cols = Math.max(0, ...trimmed.map((r) => r.length));
+  const normalized = trimmed.map((r) => {
     if (r.length === cols) return r;
-    if (r.length > cols) return r.slice(0, cols);
     return [...r, ...Array(cols - r.length).fill("")];
   });
 
@@ -1532,7 +1545,7 @@ function resolvePageForMcp(
 function createMcpServer(userEmail: string | null = null): McpServer {
   const mcp = new McpServer({
     name: "PostPaper",
-    version: "0.5.0",
+    version: MCP_SERVER_VERSION,
     instructions: MCP_INSTRUCTIONS,
   });
 
@@ -1828,7 +1841,7 @@ function createMcpServer(userEmail: string | null = null): McpServer {
 
   registerTool(
     "create_table",
-    "Insert a table. Use for genuinely tabular or comparative data (schedules, comparisons, specs, pricing). Do NOT use when a short list would suffice — tables are visually heavy. Provide rows as a 2D array; first row is the header. Cells support inline formatting (**bold**, *italic*, [text](url), etc.). Pass after_block_id to place precisely; omit to append at the end. Multi-page docs: pass the same 'page' argument you used with read_document.",
+    "Insert a table. Use for genuinely tabular or comparative data (schedules, comparisons, specs, pricing). Do NOT use when a short list would suffice — tables are visually heavy. Provide rows as a 2D array; first row is the header. Each row should have ONLY the cells you want rendered — no trailing empty strings, no padding for visual alignment (the server trims trailing empties anyway, but cleaner input is easier to debug). Cells support inline formatting (**bold**, *italic*, [text](url), etc.). Pass after_block_id to place precisely; omit to append at the end. Multi-page docs: pass the same 'page' argument you used with read_document.",
     {
       doc_url: z.string().describe("Document URL (/doc/:id for editor access, /v/:token for view-only) or the bare document ID."),
       rows: z.array(z.array(z.string())).describe('2D array of cell text. Example: [["Name","Score"],["Alice","95"],["Bob","87"]]'),
