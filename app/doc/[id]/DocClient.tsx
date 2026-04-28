@@ -108,7 +108,20 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     importHtmlRef.current = fn;
   }, []);
 
-  // ── Session / name bootstrap (unchanged) ───────────────────────────
+  // ── Session / name bootstrap ───────────────────────────────────────
+  //
+  // Three paths into here:
+  //   1. /doc/:id — user is always signed in (auth gate in page.tsx),
+  //      so we'll always read their Google name.
+  //   2. /v/:token (viewer mode) — anonymous read-only. We DO NOT prompt
+  //      for a display name: viewers can't write, and the marketing
+  //      landing pages we share to prospects shouldn't gate first
+  //      impression behind a name input. We generate a throwaway
+  //      "Viewer" identity for the awareness layer (no one sees it
+  //      anyway since viewer awareness updates are dropped server-side).
+  //   3. Edge case: signed-out user somehow on /doc/:id (shouldn't
+  //      happen post-auth-gate, but the legacy NamePrompt path stays
+  //      as a fallback for that and for any future anon-edit flow).
   useEffect(() => {
     fetch("/api/auth/session")
       .then((r) => r.json())
@@ -119,16 +132,29 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
           setSessionUser(data.user);
           setUser({ name: data.user.name, color, image: data.user.image });
           setChecked(true);
-        } else {
-          const name = localStorage.getItem("collab-docs-name");
-          const color = localStorage.getItem("collab-docs-color");
-          if (name && color) {
-            setUser({ name, color });
-          }
-          setChecked(true);
+          return;
         }
+        if (shareToken) {
+          // Viewer-only path — no prompt, no friction.
+          const color = localStorage.getItem("collab-docs-color") || randomColor();
+          setUser({ name: "Viewer", color });
+          setChecked(true);
+          return;
+        }
+        const name = localStorage.getItem("collab-docs-name");
+        const color = localStorage.getItem("collab-docs-color");
+        if (name && color) {
+          setUser({ name, color });
+        }
+        setChecked(true);
       })
       .catch(() => {
+        if (shareToken) {
+          const color = localStorage.getItem("collab-docs-color") || randomColor();
+          setUser({ name: "Viewer", color });
+          setChecked(true);
+          return;
+        }
         const name = localStorage.getItem("collab-docs-name");
         const color = localStorage.getItem("collab-docs-color");
         if (name && color) {
@@ -136,7 +162,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         }
         setChecked(true);
       });
-  }, []);
+  }, [shareToken]);
 
   // ── Open WebSocket connection once user is resolved ────────────────
   useEffect(() => {
