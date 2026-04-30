@@ -3507,6 +3507,119 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /api/admin/mcp-health — silent-dropoff signal for MCP adoption.
+  //
+  // Hypothesis: of N total signups, only K become AI users. We want to
+  // know whether the gap is "never tried MCP" vs "tried, hit a problem,
+  // gave up." We don't currently log MCP errors, but we have:
+  //   - mcp_keys.last_used_at — when the key was last resolved by /mcp
+  //   - events table — successful tool calls per (kind, owner)
+  // From these we infer:
+  //   - keys minted but never resolved (last_used_at IS NULL) → user
+  //     created a key but never even paste it into a client
+  //   - keys resolved but no recent events → user tried, then stopped
+  //   - keys actively used → healthy
+  if (req.method === "GET" && pathname === "/api/admin/mcp-health") {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    } else {
+      sendJson(res, 503, { error: "INTERNAL_SECRET is not configured" });
+      return;
+    }
+
+    try {
+      const totalUsers = (db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n;
+      const totalKeys = (db.prepare("SELECT COUNT(*) AS n FROM mcp_keys").get() as { n: number }).n;
+      const neverUsed = (
+        db
+          .prepare("SELECT COUNT(*) AS n FROM mcp_keys WHERE last_used_at IS NULL")
+          .get() as { n: number }
+      ).n;
+      const stale1d = (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM mcp_keys WHERE last_used_at IS NOT NULL AND last_used_at < datetime('now','-1 day')"
+          )
+          .get() as { n: number }
+      ).n;
+      const stale7d = (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM mcp_keys WHERE last_used_at IS NOT NULL AND last_used_at < datetime('now','-7 days')"
+          )
+          .get() as { n: number }
+      ).n;
+      const usedToday = (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM mcp_keys WHERE last_used_at >= datetime('now','-1 day')"
+          )
+          .get() as { n: number }
+      ).n;
+
+      // Sample of users who minted keys but never resolved them — best
+      // candidates to debug "tried setup, gave up at the click-into-claude
+      // step." Mask emails like the public stats do.
+      const neverUsedSample = (
+        db
+          .prepare(
+            `SELECT user_email, created_at FROM mcp_keys WHERE last_used_at IS NULL ORDER BY created_at DESC LIMIT 20`
+          )
+          .all() as Array<{ user_email: string; created_at: string }>
+      ).map((r) => ({
+        email: maskEmail(r.user_email),
+        minted_at: r.created_at,
+      }));
+
+      // Users with key + zero events ever (across all event kinds) —
+      // they technically resolved the key (if last_used_at is set) but
+      // never produced a successful tool call. Could mean every call
+      // failed (auth, doc-not-found, etc.) and we don't currently log it.
+      const keysWithZeroEventsRow = db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM mcp_keys k
+           WHERE NOT EXISTS (
+             SELECT 1 FROM events e WHERE e.owner_id = k.user_email AND e.kind LIKE 'mcp.%'
+           )`
+        )
+        .get() as { n: number };
+      const keysWithZeroEvents = keysWithZeroEventsRow.n;
+
+      // Distribution of mcp.* events in the last 24h, grouped by kind.
+      // Helps see if certain tools are dominating recent usage (and
+      // therefore which tool descriptions / paths are worth investing
+      // in).
+      const recentEventDistribution = db
+        .prepare(
+          `SELECT kind, COUNT(*) AS n FROM events
+           WHERE kind LIKE 'mcp.%' AND ts >= datetime('now','-1 day')
+           GROUP BY kind ORDER BY n DESC`
+        )
+        .all() as Array<{ kind: string; n: number }>;
+
+      sendJson(res, 200, {
+        totalUsers,
+        totalKeys,
+        keysNeverUsed: neverUsed,
+        keysStale1Day: stale1d,
+        keysStale7Days: stale7d,
+        keysUsedInLastDay: usedToday,
+        keysWithZeroEvents,
+        neverUsedSample,
+        recentEventDistribution,
+        usersNoKey: totalUsers - totalKeys,
+      });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
   // GET /api/admin/docs-summary — diagnostic counts of `documents`.
   //
   // Used to investigate id-prefix patterns of bulk anonymous inserts
