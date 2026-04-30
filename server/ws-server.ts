@@ -3533,7 +3533,12 @@ const httpServer = http.createServer(async (req, res) => {
     }
 
     try {
-      const totalUsers = (db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n;
+      // No `users` table — distinct non-null owner_id is our user proxy.
+      const totalUsers = (
+        db
+          .prepare("SELECT COUNT(DISTINCT owner_id) AS n FROM documents WHERE owner_id IS NOT NULL")
+          .get() as { n: number }
+      ).n;
       const totalKeys = (db.prepare("SELECT COUNT(*) AS n FROM mcp_keys").get() as { n: number }).n;
       const neverUsed = (
         db
