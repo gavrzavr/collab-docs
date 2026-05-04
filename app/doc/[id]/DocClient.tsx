@@ -239,18 +239,45 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
 
     // Surface WebSocket status as a UI signal. y-websocket emits 'status'
     // with { status: "connecting" | "connected" | "disconnected" }.
+    //
+    // Hysteresis: connect/disconnect blips of <2s shouldn't flash a scary
+    // "Offline" badge. Reconnect cycles (mobile sleep/wake, deploy, transient
+    // network) routinely generate sub-second flickers that don't represent
+    // real data risk — IDB has the local copy regardless. We delay the
+    // offline state by 2.5s; if the connection comes back within that
+    // window, the user sees no flicker at all.
+    let offlineTimer: ReturnType<typeof setTimeout> | null = null;
+    const cancelOfflineTimer = () => {
+      if (offlineTimer) { clearTimeout(offlineTimer); offlineTimer = null; }
+    };
     const onStatus = ({ status }: { status: "connecting" | "connected" | "disconnected" }) => {
-      setWsStatus(
-        status === "connected" ? "connected"
-        : status === "connecting" ? "connecting"
-        : "offline"
-      );
+      if (status === "connected") {
+        cancelOfflineTimer();
+        setWsStatus("connected");
+      } else if (status === "connecting") {
+        // Don't overwrite "connected" with "connecting" instantly — only
+        // flip if we were already in a non-connected state, OR after the
+        // offline timer would have fired anyway. This avoids a sync→connecting
+        // flash on every awareness renewal cycle.
+        cancelOfflineTimer();
+        offlineTimer = setTimeout(() => {
+          setWsStatus("offline");
+          offlineTimer = null;
+        }, 2500);
+      } else {
+        cancelOfflineTimer();
+        offlineTimer = setTimeout(() => {
+          setWsStatus("offline");
+          offlineTimer = null;
+        }, 2500);
+      }
     };
     p.on("status", onStatus);
     if (p.wsconnected) setWsStatus("connected");
 
     setProvider(p);
     return () => {
+      cancelOfflineTimer();
       p.off("status", onStatus);
       p.destroy();
       setProvider(null);
