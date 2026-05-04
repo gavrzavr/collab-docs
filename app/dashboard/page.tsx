@@ -1,8 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import McpKeyPanel from "@/components/McpKeyPanel";
+import DocCard from "@/components/DocCard";
 import { MCP_SERVER_VERSION, notesNewerThan } from "@/lib/release-notes";
 
 const SEEN_VERSION_KEY = "postpaper:dashboard:seen-version";
@@ -13,24 +14,6 @@ interface DocMeta {
   updated_at: string;
   owner_id: string | null;
   role: "owner" | "editor" | "commenter";
-}
-
-const ROLE_CHIP: Record<DocMeta["role"], { label: string; classes: string }> = {
-  owner: { label: "Owner", classes: "bg-gray-100 text-gray-600" },
-  editor: { label: "Shared · Editor", classes: "bg-blue-50 text-blue-700" },
-  commenter: { label: "Shared · Commenter", classes: "bg-purple-50 text-purple-700" },
-};
-
-function timeAgo(dateStr: string): string {
-  const now = new Date();
-  const date = new Date(dateStr);
-  const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-  if (seconds < 60) return "just now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  if (seconds < 172800) return "yesterday";
-  return `${Math.floor(seconds / 86400)} days ago`;
 }
 
 export default function DashboardPage() {
@@ -63,6 +46,16 @@ export default function DashboardPage() {
     setUnseenNotes([]);
   }
 
+  const refreshDocs = useCallback(() => {
+    fetch("/api/v1/user/docs")
+      .then((r) => r.json())
+      .then((data) => {
+        setDocs(data.documents || []);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
   useEffect(() => {
     // Fetch session
     fetch("/api/auth/session")
@@ -75,15 +68,8 @@ export default function DashboardPage() {
         }
       });
 
-    // Fetch documents
-    fetch("/api/v1/user/docs")
-      .then((r) => r.json())
-      .then((data) => {
-        setDocs(data.documents || []);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [router]);
+    refreshDocs();
+  }, [router, refreshDocs]);
 
   async function handleCreate() {
     setCreating(true);
@@ -253,33 +239,17 @@ export default function DashboardPage() {
         ) : (
           /* Document grid */
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {docs.map((doc) => {
-              const chip = ROLE_CHIP[doc.role];
-              return (
-                <button
-                  key={doc.id}
-                  onClick={() => router.push(`/doc/${doc.id}`)}
-                  className="text-left p-5 bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all"
-                >
-                  <h3 className="font-medium text-gray-900 mb-2 truncate">
-                    {doc.title || "Untitled"}
-                  </h3>
-                  <div className="flex items-center justify-between gap-2">
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide ${chip.classes}`}
-                    >
-                      {chip.label}
-                    </span>
-                    <span className="text-xs text-gray-400">{timeAgo(doc.updated_at)}</span>
-                  </div>
-                  {doc.role !== "owner" && doc.owner_id && (
-                    <p className="text-xs text-gray-400 mt-2 truncate">
-                      from {doc.owner_id}
-                    </p>
-                  )}
-                </button>
-              );
-            })}
+            {docs.map((doc) => (
+              <DocCard
+                key={doc.id}
+                id={doc.id}
+                title={doc.title}
+                updated_at={doc.updated_at}
+                owner_id={doc.owner_id}
+                role={doc.role}
+                onChanged={refreshDocs}
+              />
+            ))}
           </div>
         )}
       </main>

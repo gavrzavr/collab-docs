@@ -3524,6 +3524,207 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /api/docs/:id/delete — owner-only cascade delete.
+  //
+  // Called by Next.js after it has verified the requesting user is the
+  // doc's owner (NextAuth session → email). ws-server independently
+  // re-checks ownership against documents.owner_id as a defense-in-depth
+  // — even if Next.js logic somewhere granted DELETE to a non-owner,
+  // ws-server bounces it.
+  //
+  // Cascade scope: documents, yjs_documents, events, share_tokens,
+  // document_collaborators. Plus eviction from the in-memory `docs`
+  // Map (close WS connections, clear persist timer, drop the ydoc) so
+  // that any active editor session sees the deletion immediately
+  // instead of resurrecting the doc on next persist.
+  {
+    const m = pathname.match(/^\/api\/docs\/([^/]+)\/delete$/);
+    if (req.method === "POST" && m) {
+      const docId = m[1];
+      const expected = process.env.INTERNAL_SECRET;
+      if (expected) {
+        const got = req.headers["x-internal-secret"];
+        if (got !== expected) {
+          sendJson(res, 403, { error: "forbidden" });
+          return;
+        }
+      } else {
+        sendJson(res, 503, { error: "INTERNAL_SECRET is not configured" });
+        return;
+      }
+      try {
+        const body = await parseBody(req).catch(() => ({}));
+        const requesterEmail = (body as { email?: string }).email || "";
+        if (!requesterEmail) {
+          sendJson(res, 400, { error: "email required in body" });
+          return;
+        }
+        const ownerRow = getDocOwnerStmt.get(docId) as { owner_id: string | null } | undefined;
+        if (!ownerRow) {
+          sendJson(res, 404, { error: "doc not found" });
+          return;
+        }
+        if (ownerRow.owner_id !== requesterEmail) {
+          sendJson(res, 403, { error: "only the owner can delete this document" });
+          return;
+        }
+
+        // Evict in-memory entry first so concurrent edits stop persisting.
+        const entry = docs.get(docId);
+        if (entry) {
+          if (entry.persistTimeout) {
+            clearTimeout(entry.persistTimeout);
+            entry.persistTimeout = null;
+          }
+          for (const conn of entry.conns) {
+            try { conn.close(1001, "Document deleted"); } catch { /* ignore */ }
+          }
+          try { entry.ydoc.destroy(); } catch { /* ignore */ }
+          docs.delete(docId);
+        }
+
+        // Cascade. All in one transaction so a partial failure doesn't
+        // leave orphan rows pointing at a non-existent doc.
+        const deleted = db.transaction(() => {
+          const a = db.prepare("DELETE FROM documents WHERE id = ?").run(docId);
+          const b = db.prepare("DELETE FROM yjs_documents WHERE doc_id = ?").run(docId);
+          const c = db.prepare("DELETE FROM events WHERE doc_id = ?").run(docId);
+          const d = db.prepare("DELETE FROM share_tokens WHERE doc_id = ?").run(docId);
+          const e = db
+            .prepare("DELETE FROM document_collaborators WHERE doc_id = ?")
+            .run(docId);
+          return {
+            documents: a.changes,
+            yjs_documents: b.changes,
+            events: c.changes,
+            share_tokens: d.changes,
+            document_collaborators: e.changes,
+          };
+        })();
+
+        sendJson(res, 200, { docId, deleted });
+      } catch (e) {
+        console.error("[delete-doc] failed", e);
+        sendJson(res, 500, { error: String(e) });
+      }
+      return;
+    }
+  }
+
+  // POST /api/docs/:id/rename — owner-or-editor inline doc rename.
+  //
+  // Same auth pattern as delete: gated by x-internal-secret + verified
+  // email. Body: { email, title }. Edits the FIRST H1 inside the doc's
+  // first page so the live editor sees it via Yjs and the dashboard
+  // (which derives title from documents.title) updates after the next
+  // persist. If there's no H1 yet, prepend one. This keeps the
+  // "doc title = first heading" invariant we use everywhere.
+  {
+    const m = pathname.match(/^\/api\/docs\/([^/]+)\/rename$/);
+    if (req.method === "POST" && m) {
+      const docId = m[1];
+      const expected = process.env.INTERNAL_SECRET;
+      if (expected) {
+        const got = req.headers["x-internal-secret"];
+        if (got !== expected) {
+          sendJson(res, 403, { error: "forbidden" });
+          return;
+        }
+      } else {
+        sendJson(res, 503, { error: "INTERNAL_SECRET is not configured" });
+        return;
+      }
+      try {
+        const body = await parseBody(req).catch(() => ({}));
+        const requesterEmail = (body as { email?: string }).email || "";
+        const newTitle = ((body as { title?: string }).title || "").trim();
+        if (!requesterEmail) {
+          sendJson(res, 400, { error: "email required" });
+          return;
+        }
+        if (!newTitle) {
+          sendJson(res, 400, { error: "title required" });
+          return;
+        }
+        if (newTitle.length > 200) {
+          sendJson(res, 400, { error: "title too long (max 200 chars)" });
+          return;
+        }
+        const access = getDocAccess(docId, requesterEmail);
+        if (access !== "owner" && access !== "editor") {
+          sendJson(res, 403, { error: "owner or editor required to rename" });
+          return;
+        }
+        // We verified via getDocAccess that the doc has a row in
+        // `documents` — getOrCreateDoc is safe here, won't pollute
+        // storage with phantom IDs.
+        const entry = getOrCreateDoc(docId);
+        const fragment = entry.ydoc.getXmlFragment("blocknote");
+        // Find the first heading block and replace its text. If no
+        // heading exists, prepend one. Done inside a single Yjs
+        // transaction so connected editors see one atomic change.
+        entry.ydoc.transact(() => {
+          let firstHeading: Y.XmlElement | null = null;
+          // Walk fragment → blockGroup → blockContainer → heading
+          for (let i = 0; i < fragment.length && !firstHeading; i++) {
+            const top = fragment.get(i);
+            if (top instanceof Y.XmlElement && top.nodeName === "blockGroup") {
+              for (let j = 0; j < top.length && !firstHeading; j++) {
+                const bc = top.get(j);
+                if (!(bc instanceof Y.XmlElement) || bc.nodeName !== "blockContainer") continue;
+                for (let k = 0; k < bc.length; k++) {
+                  const child = bc.get(k);
+                  if (child instanceof Y.XmlElement && child.nodeName === "heading") {
+                    firstHeading = child;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+          if (firstHeading) {
+            // Replace inline content of the heading. The heading's only
+            // child is a Y.XmlText with the title; clear and reinsert.
+            for (let i = firstHeading.length - 1; i >= 0; i--) {
+              firstHeading.delete(i, 1);
+            }
+            firstHeading.insert(0, [new Y.XmlText(newTitle)]);
+          } else {
+            // No H1 yet — prepend one. Build:
+            //   blockContainer(id) → heading(level=1) → XmlText(newTitle)
+            const blockContainer = new Y.XmlElement("blockContainer");
+            blockContainer.setAttribute("id", generateBlockId());
+            const heading = new Y.XmlElement("heading");
+            heading.setAttribute("level", "1");
+            heading.insert(0, [new Y.XmlText(newTitle)]);
+            blockContainer.insert(0, [heading]);
+            // Find or create the top-level blockGroup
+            let topGroup: Y.XmlElement | null = null;
+            for (let i = 0; i < fragment.length; i++) {
+              const ch = fragment.get(i);
+              if (ch instanceof Y.XmlElement && ch.nodeName === "blockGroup") {
+                topGroup = ch;
+                break;
+              }
+            }
+            if (!topGroup) {
+              topGroup = new Y.XmlElement("blockGroup");
+              fragment.insert(0, [topGroup]);
+            }
+            topGroup.insert(0, [blockContainer]);
+          }
+        });
+        // Force-flush so the dashboard's documents.title is fresh.
+        entry.persistNow();
+        sendJson(res, 200, { docId, title: newTitle });
+      } catch (e) {
+        console.error("[rename-doc] failed", e);
+        sendJson(res, 500, { error: String(e) });
+      }
+      return;
+    }
+  }
+
   // GET /api/admin/mcp-health — silent-dropoff signal for MCP adoption.
   //
   // Hypothesis: of N total signups, only K become AI users. We want to
