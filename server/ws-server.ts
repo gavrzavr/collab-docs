@@ -129,6 +129,26 @@ db.exec(`
     last_used_at TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_mcp_keys_key ON mcp_keys (key);
+
+  -- Uploaded image blobs. One row per user-uploaded image stored in
+  -- Vercel Blob. Used for orphan-GC (delete blobs no longer
+  -- referenced by any block) and abuse observability (top-uploaders,
+  -- per-user storage usage). The blob_url is the canonical source of
+  -- truth for what's stored externally; doc_id ties the image to a
+  -- document so we can purge images when a doc is deleted.
+  CREATE TABLE IF NOT EXISTS uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    blob_url TEXT NOT NULL UNIQUE,
+    doc_id TEXT NOT NULL,
+    user_email TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    mime TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_referenced_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_uploads_doc ON uploads (doc_id);
+  CREATE INDEX IF NOT EXISTS idx_uploads_user ON uploads (user_email);
+  CREATE INDEX IF NOT EXISTS idx_uploads_referenced ON uploads (last_referenced_at);
 `);
 
 // ─── Migration: mcp_keys.last_seen_server_version ────────────────────
@@ -3585,6 +3605,17 @@ const httpServer = http.createServer(async (req, res) => {
 
         // Cascade. All in one transaction so a partial failure doesn't
         // leave orphan rows pointing at a non-existent doc.
+        // NOTE: uploads rows for this doc are MARKED orphan by zeroing
+        // last_referenced_at instead of deleted, so the actual blob
+        // bytes get GC'd by the caller after the 7-day grace window.
+        // Caller (Next.js DELETE handler) can also fetch the URL list
+        // from the response and `del()` them immediately if it has
+        // @vercel/blob credentials handy.
+        const orphanedUploadUrls = (
+          db.prepare("SELECT blob_url FROM uploads WHERE doc_id = ?").all(docId) as Array<{
+            blob_url: string;
+          }>
+        ).map((r) => r.blob_url);
         const deleted = db.transaction(() => {
           const a = db.prepare("DELETE FROM documents WHERE id = ?").run(docId);
           const b = db.prepare("DELETE FROM yjs_documents WHERE doc_id = ?").run(docId);
@@ -3593,16 +3624,24 @@ const httpServer = http.createServer(async (req, res) => {
           const e = db
             .prepare("DELETE FROM document_collaborators WHERE doc_id = ?")
             .run(docId);
+          // Mark uploads orphan — zero last_referenced_at so the cron
+          // catches them on next sweep. We don't delete the row here
+          // because the row is the only record telling the GC which
+          // blobs to remove.
+          const f = db
+            .prepare("UPDATE uploads SET last_referenced_at = '1970-01-01' WHERE doc_id = ?")
+            .run(docId);
           return {
             documents: a.changes,
             yjs_documents: b.changes,
             events: c.changes,
             share_tokens: d.changes,
             document_collaborators: e.changes,
+            uploads_orphaned: f.changes,
           };
         })();
 
-        sendJson(res, 200, { docId, deleted });
+        sendJson(res, 200, { docId, deleted, orphanedUploadUrls });
       } catch (e) {
         console.error("[delete-doc] failed", e);
         sendJson(res, 500, { error: String(e) });
@@ -3723,6 +3762,184 @@ const httpServer = http.createServer(async (req, res) => {
       }
       return;
     }
+  }
+
+  // POST /api/uploads/track — record an image upload in the SQLite
+  // index. Called by Next.js after the blob has already been written
+  // to Vercel Blob (which is the source of truth for the bytes). We
+  // store URL + doc_id + user_email + size for orphan-GC and abuse
+  // observability. Gated by x-internal-secret like other Next.js→
+  // ws-server admin paths.
+  if (req.method === "POST" && pathname === "/api/uploads/track") {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    } else {
+      sendJson(res, 503, { error: "INTERNAL_SECRET is not configured" });
+      return;
+    }
+    try {
+      const body = (await parseBody(req)) as {
+        blob_url?: string;
+        doc_id?: string;
+        user_email?: string;
+        size?: number;
+        mime?: string;
+      };
+      if (!body.blob_url || !body.doc_id || !body.user_email || !body.size || !body.mime) {
+        sendJson(res, 400, { error: "blob_url, doc_id, user_email, size, mime required" });
+        return;
+      }
+      db.prepare(
+        `INSERT INTO uploads (blob_url, doc_id, user_email, size, mime, last_referenced_at)
+         VALUES (?, ?, ?, ?, ?, datetime('now'))
+         ON CONFLICT(blob_url) DO UPDATE SET last_referenced_at = datetime('now')`
+      ).run(body.blob_url, body.doc_id, body.user_email, body.size, body.mime);
+      sendJson(res, 201, { ok: true });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
+  // GET /api/admin/upload-stats — observability for image upload abuse.
+  // Returns total storage, count, top-N users by storage. Read-only,
+  // gated by x-internal-secret.
+  if (req.method === "GET" && pathname === "/api/admin/upload-stats") {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    } else {
+      sendJson(res, 503, { error: "INTERNAL_SECRET is not configured" });
+      return;
+    }
+    try {
+      const total = db
+        .prepare("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM uploads")
+        .get() as { n: number; bytes: number };
+      const byUser = (
+        db
+          .prepare(
+            `SELECT user_email, COUNT(*) AS count, SUM(size) AS bytes
+             FROM uploads GROUP BY user_email ORDER BY bytes DESC LIMIT 20`
+          )
+          .all() as Array<{ user_email: string; count: number; bytes: number }>
+      ).map((r) => ({ email: maskEmail(r.user_email), count: r.count, bytes: r.bytes }));
+      const orphanCount = (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM uploads
+             WHERE last_referenced_at < datetime('now', '-7 days')`
+          )
+          .get() as { n: number }
+      ).n;
+      sendJson(res, 200, {
+        totalUploads: total.n,
+        totalBytes: total.bytes,
+        topUsersByStorage: byUser,
+        orphansEligibleForGc: orphanCount,
+      });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
+  // POST /api/admin/uploads-cleanup-by-user — emergency cleanup of one
+  // user's image uploads. Body: { email, dryRun? }. Returns matched
+  // blob URLs so the caller can deleteBlob them in Vercel and confirm
+  // the cleanup. Does NOT delete the blob from Vercel itself — the
+  // caller (Next.js / admin script) is responsible for that, since
+  // ws-server doesn't have @vercel/blob credentials.
+  if (req.method === "POST" && pathname === "/api/admin/uploads-cleanup-by-user") {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    } else {
+      sendJson(res, 503, { error: "INTERNAL_SECRET is not configured" });
+      return;
+    }
+    try {
+      const body = (await parseBody(req)) as { email?: string; dryRun?: boolean };
+      if (!body.email) {
+        sendJson(res, 400, { error: "email required" });
+        return;
+      }
+      const rows = db
+        .prepare("SELECT blob_url, size FROM uploads WHERE user_email = ?")
+        .all(body.email) as Array<{ blob_url: string; size: number }>;
+      const totalBytes = rows.reduce((acc, r) => acc + r.size, 0);
+      if (body.dryRun) {
+        sendJson(res, 200, {
+          dryRun: true,
+          matched: rows.length,
+          totalBytes,
+          urls: rows.map((r) => r.blob_url),
+        });
+        return;
+      }
+      db.prepare("DELETE FROM uploads WHERE user_email = ?").run(body.email);
+      sendJson(res, 200, {
+        dryRun: false,
+        deleted: rows.length,
+        totalBytes,
+        urls: rows.map((r) => r.blob_url),
+      });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
+  }
+
+  // POST /api/admin/uploads-orphan-gc — list (or delete) uploads that
+  // haven't been referenced for >7 days. References are bumped each
+  // time a doc is read (TODO: hook into read_document / WS sync).
+  // For v1 this just identifies candidates — actual blob deletion
+  // happens by the caller (Next.js cron with @vercel/blob credentials).
+  if (req.method === "POST" && pathname === "/api/admin/uploads-orphan-gc") {
+    const expected = process.env.INTERNAL_SECRET;
+    if (expected) {
+      const got = req.headers["x-internal-secret"];
+      if (got !== expected) {
+        sendJson(res, 403, { error: "forbidden" });
+        return;
+      }
+    } else {
+      sendJson(res, 503, { error: "INTERNAL_SECRET is not configured" });
+      return;
+    }
+    try {
+      const body = (await parseBody(req).catch(() => ({}))) as { dryRun?: boolean };
+      const rows = db
+        .prepare(
+          `SELECT blob_url FROM uploads
+           WHERE last_referenced_at < datetime('now', '-7 days')`
+        )
+        .all() as Array<{ blob_url: string }>;
+      if (body.dryRun) {
+        sendJson(res, 200, { dryRun: true, candidates: rows.length, urls: rows.map((r) => r.blob_url) });
+        return;
+      }
+      db.prepare(
+        "DELETE FROM uploads WHERE last_referenced_at < datetime('now', '-7 days')"
+      ).run();
+      sendJson(res, 200, { dryRun: false, deleted: rows.length, urls: rows.map((r) => r.blob_url) });
+    } catch (e) {
+      sendJson(res, 500, { error: String(e) });
+    }
+    return;
   }
 
   // GET /api/admin/mcp-health — silent-dropoff signal for MCP adoption.

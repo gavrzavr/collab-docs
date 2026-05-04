@@ -1,6 +1,7 @@
 import { withYDoc, readBlocks, applyOperations, type Operation } from "@/lib/yjs-api-bridge";
 import { authorizeDocAccess } from "@/lib/doc-auth";
 import { auth } from "@/auth";
+import { del } from "@vercel/blob";
 
 export const dynamic = "force-dynamic";
 
@@ -70,10 +71,28 @@ export async function DELETE(
       },
       body: JSON.stringify({ email }),
     });
-    const data = await wsRes.json().catch(() => ({}));
+    const data = (await wsRes.json().catch(() => ({}))) as {
+      orphanedUploadUrls?: string[];
+      [k: string]: unknown;
+    };
     if (!wsRes.ok) {
       return Response.json(data, { status: wsRes.status });
     }
+
+    // Best-effort blob cleanup. Failure here doesn't fail the delete —
+    // the SQLite row is already gone, and the orphan-GC cron will
+    // catch any stragglers after the 7-day grace window.
+    if (data.orphanedUploadUrls && data.orphanedUploadUrls.length > 0) {
+      const blobToken = process.env.BLOB_READ_WRITE_TOKEN;
+      if (blobToken) {
+        try {
+          await del(data.orphanedUploadUrls, { token: blobToken });
+        } catch (err) {
+          console.error("[DELETE doc] blob cleanup failed:", err);
+        }
+      }
+    }
+
     return Response.json(data);
   } catch (e) {
     return Response.json(

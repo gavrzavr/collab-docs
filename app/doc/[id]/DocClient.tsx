@@ -397,6 +397,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
                   fragmentName={activePageId}
                   userName={user.name}
                   userColor={user.color}
+                  docId={id}
                   registerImportHtml={registerImportHtml}
                   registerEditor={handleRegisterEditor}
                   readOnly={readOnly}

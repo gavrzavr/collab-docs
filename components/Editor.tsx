@@ -20,6 +20,7 @@ import { useEffect, useMemo } from "react";
 
 import { editorSchema } from "./blocknote-schema";
 import { TypographyShortcuts } from "./typography-shortcuts";
+import { uploadImage } from "./image-upload";
 
 // Wrap our Tiptap extension in a BlockNote-compatible extension so the
 // schema picks it up alongside the built-in ones (sideMenu, formatting,
@@ -41,6 +42,9 @@ interface EditorProps {
   fragmentName: string;
   userName: string;
   userColor: string;
+  /** The doc's id (route param), used to scope image uploads to this doc
+   *  for orphan-GC and observability. */
+  docId: string;
   registerImportHtml?: (fn: (html: string) => void) => void;
   registerEditor?: (editor: unknown) => void;
   /** Disable edits in the UI. The ws-server enforces this server-side too
@@ -95,7 +99,7 @@ function CollabBlockTypeSelect() {
   return <Components.FormattingToolbar.Select className="bn-select" items={selectItems} />;
 }
 
-export default function Editor({ ydoc, provider, fragmentName, userName, userColor, registerImportHtml, registerEditor, readOnly }: EditorProps) {
+export default function Editor({ ydoc, provider, fragmentName, userName, userColor, docId, registerImportHtml, registerEditor, readOnly }: EditorProps) {
   // Resolve the fragment from the shared ydoc. Memoized on fragmentName so
   // useCreateBlockNote gets a stable reference per page — when fragmentName
   // changes (tab switch), the parent should remount us via a React key, which
@@ -105,6 +109,19 @@ export default function Editor({ ydoc, provider, fragmentName, userName, userCol
   const editor = useCreateBlockNote({
     schema: editorSchema,
     extensions: [typographyShortcutsExtension],
+    // Compress on the client, upload to /api/v1/uploads, returns the
+    // final Vercel Blob URL. BlockNote stores it on the image block's
+    // `url` prop. Errors surface as alert() — BlockNote doesn't have
+    // a built-in toast surface in 0.47.
+    uploadFile: async (file: File) => {
+      try {
+        return await uploadImage(file, docId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (typeof window !== "undefined") window.alert(`Image upload failed: ${msg}`);
+        throw err;
+      }
+    },
     collaboration: {
       provider,
       fragment,
