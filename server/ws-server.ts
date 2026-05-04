@@ -752,6 +752,13 @@ interface DocEntry {
   conns: Set<WebSocket>;
   persistTimeout: ReturnType<typeof setTimeout> | null;
   persistNow: () => void;
+  /** True when the in-memory ydoc has changes not yet flushed to SQLite.
+   *  Set on every ydoc 'update' event, cleared after a successful
+   *  persistNow(). persistAllDocs() (SIGTERM path) skips clean entries
+   *  so a Railway redeploy doesn't bump every doc's updated_at — that
+   *  was making "edited 7 hours ago" appear on every dashboard card
+   *  even for docs the user hadn't touched in days. */
+  dirty: boolean;
 }
 const docs = new Map<string, DocEntry>();
 
@@ -1310,7 +1317,21 @@ function getOrCreateDoc(docName: string): DocEntry {
     Y.applyUpdate(ydoc, new Uint8Array(row.state));
   }
 
+  const entry: DocEntry = {
+    ydoc,
+    awareness,
+    conns: new Set(),
+    persistTimeout: null,
+    persistNow: () => {}, // replaced below — needs entry in closure
+    dirty: false,
+  };
+
+  // persistNow closes over `entry` so it can read+clear the dirty flag.
+  // No-op when nothing has changed since the last successful flush —
+  // protects updated_at from being bumped by SIGTERM-flush of a doc the
+  // user hasn't actually touched.
   const persistNow = () => {
+    if (!entry.dirty) return;
     try {
       const state = Buffer.from(Y.encodeStateAsUpdate(ydoc));
       db.prepare(
@@ -1321,22 +1342,18 @@ function getOrCreateDoc(docName: string): DocEntry {
       db.prepare(
         "UPDATE documents SET title = ?, updated_at = datetime('now') WHERE id = ?"
       ).run(title, docName);
+      entry.dirty = false;
     } catch (e) {
       console.error(`Failed to persist doc ${docName}:`, e);
     }
   };
+  entry.persistNow = persistNow;
 
-  const entry: DocEntry = {
-    ydoc,
-    awareness,
-    conns: new Set(),
-    persistTimeout: null,
-    persistNow,
-  };
-
-  // Persist on updates (debounced). The timer lives on the entry so cleanup
-  // can clear it without leaving a pending write against a destroyed ydoc.
+  // Persist on updates (debounced). Mark dirty here, regardless of how
+  // soon the timer fires — even if shutdown happens before the 500ms
+  // debounce expires, persistAllDocs() will see dirty=true and flush.
   ydoc.on("update", () => {
+    entry.dirty = true;
     if (entry.persistTimeout) clearTimeout(entry.persistTimeout);
     entry.persistTimeout = setTimeout(() => {
       entry.persistTimeout = null;
@@ -4197,6 +4214,11 @@ wss.on("connection", (ws, req) => {
 function persistAllDocs() {
   let count = 0;
   for (const [docName, entry] of docs) {
+    // Skip clean docs — no in-memory changes pending. Without this, a
+    // Railway redeploy bumped every loaded doc's updated_at to "now",
+    // which made every dashboard card read "edited <hours-since-deploy>
+    // ago" regardless of whether the user actually edited anything.
+    if (!entry.dirty) continue;
     try {
       const state = Buffer.from(Y.encodeStateAsUpdate(entry.ydoc));
       db.prepare(
@@ -4208,6 +4230,7 @@ function persistAllDocs() {
         "UPDATE documents SET title = ?, updated_at = datetime('now') WHERE id = ?"
       ).run(title, docName);
 
+      entry.dirty = false;
       count++;
     } catch (e) {
       console.error(`Failed to persist doc ${docName}:`, e);
