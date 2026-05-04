@@ -120,6 +120,27 @@ body {
   display: none !important;
 }
 
+/* ─── Link styling ────────────────────────────────────────────────────
+   BlockNote renders links as plain <a> with no theme color or
+   underline — they read identical to surrounding text, so users have
+   no visual cue that they're clickable. Daria's feedback: "highlight
+   links, right now they look the same as plain text."
+
+   Going with the conventional web pattern — blue + underline. Slightly
+   muted underline color so it doesn't feel heavy on dense text, full
+   color on hover for affordance. Tailwind blue-600 (#2563eb) is the
+   accent we already use elsewhere (Share dropdown, "What's new" banner). */
+.bn-container a {
+  color: #2563eb;
+  text-decoration: underline;
+  text-decoration-color: rgba(37, 99, 235, 0.4);
+  text-underline-offset: 2px;
+  transition: text-decoration-color 0.15s ease;
+}
+.bn-container a:hover {
+  text-decoration-color: rgba(37, 99, 235, 1);
+}
+
 /* Name prompt overlay */
 .name-prompt-overlay {
   position: fixed;
