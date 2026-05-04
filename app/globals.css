@@ -141,6 +141,29 @@ body {
   text-decoration-color: rgba(37, 99, 235, 1);
 }
 
+/* ─── Drag preview pointer-events fix (BlockNote BLO-996) ───────────────
+   When you drag a block, BlockNote clones it into a `.bn-drag-preview`
+   element appended to body at position:absolute; top:0; left:0 with
+   opacity 0.001. The clone exists so the browser can snapshot it for
+   the OS-level drag image — but the DOM node STAYS in the body for the
+   duration of the drag.
+
+   For tall blocks (a 600-800px image), that invisible clone covers a
+   huge slice of the editor below the toolbar and intercepts dragover
+   events — drops that should land on a paragraph below the image
+   silently fail. Daria's bug report: dragging an image UP works,
+   dragging it DOWN through text is "почти нереально" — exact symptom
+   of the clone shadowing the lower drop zones.
+
+   Upstream fix shipped in @blocknote/core 0.49.0 (PR #2670) — one line:
+   pointer-events:none on the preview. We're pinned to 0.47.3 (0.48.0
+   has a breaking .bn-root/.bn-container theme split we don't want to
+   touch right now), so apply the same override here. Safe to remove
+   after we upgrade past 0.49.0. */
+.bn-drag-preview {
+  pointer-events: none !important;
+}
+
 /* Name prompt overlay */
 .name-prompt-overlay {
   position: fixed;
