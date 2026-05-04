@@ -12,9 +12,14 @@ interface ToolbarProps {
   readOnly?: boolean;
   /** Owner-only actions (minting editor invites) require this flag. */
   isOwner?: boolean;
+  /** Live WebSocket connection status, surfaced as a colored dot next to the
+   *  brand mark. Helps users distinguish "I'm offline, my edits are local" from
+   *  "everything is fine" — without this, a silent WS drop looks identical to
+   *  normal operation until reload reveals lost work. */
+  wsStatus?: "connecting" | "connected" | "offline";
 }
 
-export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, isOwner }: ToolbarProps) {
+export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, isOwner, wsStatus }: ToolbarProps) {
   const [copied, setCopied] = useState<"edit" | "view" | "ai" | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [mintingView, setMintingView] = useState(false);
@@ -214,6 +219,39 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, is
         />
         <span className="hidden sm:inline">PostPaper</span>
       </Link>
+
+      {/* Connection status indicator. Sits to the LEFT of the action cluster
+          (still pushed there by `ml-auto` on the brand link) so it doesn't
+          get clipped on mobile. Only renders for non-viewer sessions where
+          the user can actually edit — viewers don't write, status is moot.
+          Tooltip explains the offline-but-saving-locally behavior so users
+          don't panic during transient disconnects. */}
+      {!readOnly && wsStatus && (
+        <div
+          className="hidden sm:flex items-center gap-1.5 text-xs text-gray-500 mr-1 shrink-0"
+          title={
+            wsStatus === "connected" ? "Connected — changes sync in real time"
+            : wsStatus === "connecting" ? "Connecting to sync server…"
+            : "Offline — your edits are saved locally and will sync when you reconnect"
+          }
+          aria-live="polite"
+        >
+          <span
+            aria-hidden="true"
+            className={
+              "inline-block w-2 h-2 rounded-full " +
+              (wsStatus === "connected" ? "bg-emerald-500"
+              : wsStatus === "connecting" ? "bg-amber-400 animate-pulse"
+              : "bg-rose-500")
+            }
+          />
+          <span>
+            {wsStatus === "connected" ? "Synced"
+            : wsStatus === "connecting" ? "Connecting"
+            : "Offline"}
+          </span>
+        </div>
+      )}
 
       {/* 1. Share (dropdown: edit link + view link) */}
       <div className="relative shrink-0" ref={shareRef}>

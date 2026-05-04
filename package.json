@@ -27,6 +27,7 @@
     "react-dom": "19.2.4",
     "sharp": "^0.34.5",
     "ws": "^8.20.0",
+    "y-indexeddb": "^9.0.12",
     "y-protocols": "^1.0.7",
     "y-websocket": "^3.0.0",
     "yjs": "^13.6.30"

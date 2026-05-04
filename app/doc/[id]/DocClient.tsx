@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import dynamic from "next/dynamic";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
+import { IndexeddbPersistence } from "y-indexeddb";
 import NamePrompt from "@/components/NamePrompt";
 import Toolbar from "@/components/Toolbar";
 import DocPreview from "@/components/DocPreview";
@@ -69,6 +70,20 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   const [ydoc] = useState<Y.Doc>(() => new Y.Doc());
   const [provider, setProvider] = useState<WebsocketProvider | null>(null);
   const [synced, setSynced] = useState(false);
+  /**
+   * WebSocket connection status, surfaced as a small dot in the toolbar so
+   * users can SEE when sync is broken. Default "connecting" — flips to
+   * "connected" on the provider's "status" event, "offline" if the
+   * connection drops or the browser is offline.
+   *
+   * Why this exists: Daria reported losing ~2h of work after a deploy.
+   * Root-cause analysis pointed at a silent WebSocket disconnect — y-websocket
+   * keeps reconnecting in the background, but without IDB persistence, edits
+   * made while disconnected lived only in browser memory and vanished on
+   * reload. The new IDB pipeline below fixes the data-loss; this indicator
+   * gives the user advance warning that we're in offline mode.
+   */
+  const [wsStatus, setWsStatus] = useState<"connecting" | "connected" | "offline">("connecting");
 
   // ── Pages ──────────────────────────────────────────────────────────
   const [pages, setPages] = useState<PageMeta[]>([]);
@@ -164,6 +179,37 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
       });
   }, [shareToken]);
 
+  // ── Local IndexedDB persistence ────────────────────────────────────
+  //
+  // y-indexeddb mirrors the Y.Doc to the browser's IndexedDB. Data path:
+  //
+  //   user types → BlockNote → Y.Doc → [IDB write] + [WS send to ws-server]
+  //   reload    → Y.Doc loads from IDB instantly → WS catches up server-side
+  //
+  // The Yjs CRDT merges IDB-restored state with whatever the server sends,
+  // so there's no "which one wins" decision to make — just a free-form
+  // catch-up. Edits made while the WebSocket is down stay in IDB and get
+  // delivered on reconnect; the user can keep editing through a deploy /
+  // network blip without losing anything to a refresh.
+  //
+  // Privacy carve-out: anonymous viewers on /v/:token may be on a shared
+  // computer. We DO NOT cache their doc in IDB — once they close the tab
+  // there should be no trace. Editors signed in with their Google account
+  // get IDB caching. The 'allow-IDB' check is `!shareToken`.
+  //
+  // Storage scope: IDB databases are origin-scoped, so no cross-doc leakage.
+  // Each doc gets its own database name (`collab-doc-${id}`), keyed off the
+  // route param, which is also the canonical doc id.
+  useEffect(() => {
+    if (!ydoc || shareToken) return; // skip for anon viewers — see comment above
+    const idb = new IndexeddbPersistence(`collab-doc-${id}`, ydoc);
+    return () => {
+      // destroy() flushes any pending writes before tearing down. Don't
+      // use clearData() — that would wipe the cache, defeating the point.
+      idb.destroy();
+    };
+  }, [id, ydoc, shareToken]);
+
   // ── Open WebSocket connection once user is resolved ────────────────
   useEffect(() => {
     if (!user) return;
@@ -191,8 +237,21 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
       p.once("sync", () => setSynced(true));
     }
 
+    // Surface WebSocket status as a UI signal. y-websocket emits 'status'
+    // with { status: "connecting" | "connected" | "disconnected" }.
+    const onStatus = ({ status }: { status: "connecting" | "connected" | "disconnected" }) => {
+      setWsStatus(
+        status === "connected" ? "connected"
+        : status === "connecting" ? "connecting"
+        : "offline"
+      );
+    };
+    p.on("status", onStatus);
+    if (p.wsconnected) setWsStatus("connected");
+
     setProvider(p);
     return () => {
+      p.off("status", onStatus);
       p.destroy();
       setProvider(null);
       setSynced(false);
@@ -290,7 +349,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
 
   return (
     <div className="flex flex-col h-screen">
-      <Toolbar docId={id} sessionUser={sessionUser} onImportHtml={handleImportHtml} readOnly={readOnly} isOwner={isOwner} />
+      <Toolbar docId={id} sessionUser={sessionUser} onImportHtml={handleImportHtml} readOnly={readOnly} isOwner={isOwner} wsStatus={wsStatus} />
 
       {/* Read-only banner. Without this users land on /v/:token, see a normal-
           looking editor, try to type, see nothing happen, and conclude the
