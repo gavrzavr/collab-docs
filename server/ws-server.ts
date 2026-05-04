@@ -4504,6 +4504,64 @@ wss.on("connection", (ws, req) => {
   const entry = getOrCreateDoc(docName);
   entry.conns.add(ws);
 
+  // ─── Keep-alive ──────────────────────────────────────────────────────
+  // Two independent layers, addressing two different timeouts:
+  //
+  //   1. WS-level ping every 25s — keeps the connection alive through
+  //      idle-timeouts on intermediate proxies (Cloudflare's WS idle
+  //      timeout is 100s, but home routers/corp NATs can be much shorter).
+  //      The browser auto-replies with pong; this travels at the WS frame
+  //      layer and never reaches application code. Visible to the proxy,
+  //      invisible to JS. Marks `pongReceived`; if a ping cycle elapses
+  //      without a pong, we assume the conn is dead and close it so the
+  //      client triggers its reconnect path.
+  //
+  //   2. App-level awareness re-broadcast every 20s — the y-websocket
+  //      CLIENT has a "no application message in 30s → force reconnect"
+  //      heartbeat (`messageReconnectTimeout` in y-websocket.js). If a
+  //      user is the only person on a doc, no other clients generate
+  //      awareness traffic, and it's possible (per Daria's bug report on
+  //      04.05.2026) for the client to silently flap connecting → synced
+  //      → offline. Re-broadcasting the current awareness map every 20s
+  //      ticks the client's `wsLastMessageReceived` and prevents the
+  //      false-positive disconnect. The payload is idempotent — y-protocols
+  //      dedups by clock — so this is functionally a heartbeat.
+  let pongReceived = true;
+  ws.on("pong", () => { pongReceived = true; });
+  const keepaliveInterval = setInterval(() => {
+    if (ws.readyState !== WebSocket.OPEN) {
+      clearInterval(keepaliveInterval);
+      return;
+    }
+    if (!pongReceived) {
+      // Previous ping never came back. Close to release the slot and let
+      // the client reconnect cleanly. Don't log this as an error — it's
+      // the routine outcome of mobile sleep/wake and other transient
+      // network drops.
+      try { ws.terminate(); } catch { /* ignore */ }
+      clearInterval(keepaliveInterval);
+      return;
+    }
+    pongReceived = false;
+    try { ws.ping(); } catch { /* ignore — close handler will fire */ }
+
+    // App-level awareness rebroadcast. Skip if there's no awareness state
+    // (extremely unlikely on an active conn, but cheap guard).
+    const states = entry.awareness.getStates();
+    if (states.size > 0) {
+      const ka = encoding.createEncoder();
+      encoding.writeVarUint(ka, messageAwareness);
+      encoding.writeVarUint8Array(
+        ka,
+        awarenessProtocol.encodeAwarenessUpdate(
+          entry.awareness,
+          Array.from(states.keys())
+        )
+      );
+      send(ws, encoding.toUint8Array(ka));
+    }
+  }, 20000);
+
   // Send sync step 1
   const encoder = encoding.createEncoder();
   encoding.writeVarUint(encoder, messageSync);
@@ -4601,6 +4659,7 @@ wss.on("connection", (ws, req) => {
   entry.awareness.on("update", awarenessChangeHandler);
 
   ws.on("close", () => {
+    clearInterval(keepaliveInterval);
     entry.conns.delete(ws);
     entry.ydoc.off("update", docUpdateHandler);
     entry.awareness.off("update", awarenessChangeHandler);
