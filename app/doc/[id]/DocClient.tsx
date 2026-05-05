@@ -460,16 +460,25 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     const MAX_ATTEMPTS = 30; // ~3s at 100ms intervals
     const HEADROOM_PX = 24;
 
+    // Two-step scroll, both `behavior: "auto"` (instant), no smooth.
+    // Smooth scrolling on intra-doc nav loses to ProseMirror's auto-scroll-
+    // to-cursor: clicking the link places PM's cursor inside the source
+    // paragraph, PM's view update fires `scrollIntoView` for that cursor,
+    // and that brand-new scroll request cancels our in-flight smooth
+    // animation — we'd land 5px down instead of 900. Instant scroll wins
+    // the race because it commits the new scrollTop in the same tick.
+    //
+    // Visually, a near-instant jump on intra-doc navigation feels right
+    // anyway: it's a directed teleport, not a reading-flow scroll. The
+    // 2.2s yellow flash on .bn-highlight-target carries the "you arrived"
+    // feedback that a long smooth animation would otherwise communicate.
     const scrollTo = (el: HTMLElement) => {
       if (!scrollEl) return;
       const elRect = el.getBoundingClientRect();
       const containerRect = scrollEl.getBoundingClientRect();
       const targetTop =
         scrollEl.scrollTop + (elRect.top - containerRect.top) - HEADROOM_PX;
-      scrollEl.scrollTo({
-        top: Math.max(0, targetTop),
-        behavior: "smooth",
-      });
+      scrollEl.scrollTop = Math.max(0, targetTop);
     };
 
     const tryScroll = () => {
@@ -478,13 +487,19 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         `[data-id="${CSS.escape(pendingScrollBlockId)}"]`
       ) as HTMLElement | null;
       if (el) {
-        scrollTo(el);
+        // First scroll: defer one frame so PM's mid-click cursor-into-view
+        // pass runs first; we land where we want, not where PM does.
+        requestAnimationFrame(() => {
+          if (!cancelled) scrollTo(el);
+        });
         el.classList.add("bn-highlight-target");
-        // Layout-drift correction: re-scroll after BlockNote has had time to
-        // finish committing all blocks above ours. Cheap, idempotent.
+        // Layout-drift correction: re-scroll after BlockNote has had time
+        // to finish committing all blocks above ours (height grows for
+        // several frames as React commits) and after PM's late
+        // scroll-to-cursor passes have settled. Cheap, idempotent.
         const driftCorrect = setTimeout(() => {
           if (!cancelled) scrollTo(el);
-        }, 500);
+        }, 250);
         const removeHighlight = setTimeout(
           () => el.classList.remove("bn-highlight-target"),
           2200
