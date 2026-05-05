@@ -124,6 +124,13 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
    *  simpler and doesn't depend on React commit timing. */
   const scrollElRef = useRef<HTMLElement | null>(null);
   const scrollToBlock = useCallback((blockId: string) => {
+    // TEMP debug — remove once we've confirmed the code path runs in prod.
+    // The DevTools session showed scrollTop staying at 0 after a click;
+    // we couldn't tell whether the React handler was failing to call
+    // this function, or if the function was being called and the scroll
+    // was being clobbered by PM's auto-scroll-to-cursor. console.log
+    // resolves the ambiguity.
+    console.log("[pp:scroll] scrollToBlock called, blockId=", blockId);
     let attempt = 0;
     const HEADROOM_PX = 24;
     const MAX_ATTEMPTS = 30;
@@ -133,23 +140,25 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
       ) as HTMLElement | null;
       const container = scrollElRef.current;
       if (el && container) {
-        const doScroll = () => {
+        console.log("[pp:scroll] found el, attempt=", attempt, "container.scrollTop=", container.scrollTop);
+        const doScroll = (label: string) => {
           const elRect = el.getBoundingClientRect();
           const containerRect = container.getBoundingClientRect();
           const top = container.scrollTop + (elRect.top - containerRect.top) - HEADROOM_PX;
-          container.scrollTop = Math.max(0, top);
+          const clamped = Math.max(0, top);
+          console.log("[pp:scroll] doScroll", label, "before=", container.scrollTop, "calc=", top, "set=", clamped);
+          container.scrollTop = clamped;
+          console.log("[pp:scroll] doScroll", label, "after=", container.scrollTop);
         };
-        // Two-pass: first frame to beat PM's auto-scroll-to-cursor on
-        // click, second pass at 250ms to correct for layout drift as
-        // BlockNote streams blocks above us.
-        requestAnimationFrame(doScroll);
-        setTimeout(doScroll, 250);
-        // Visual feedback — yellow flash for 2.2s.
+        requestAnimationFrame(() => doScroll("raf"));
+        setTimeout(() => doScroll("t250"), 250);
+        setTimeout(() => doScroll("t500"), 500);
         el.classList.add("bn-highlight-target");
         setTimeout(() => el.classList.remove("bn-highlight-target"), 2200);
         return;
       }
       if (attempt++ < MAX_ATTEMPTS) setTimeout(tick, 100);
+      else console.log("[pp:scroll] gave up, never found el for", blockId);
     };
     tick();
   }, []);
