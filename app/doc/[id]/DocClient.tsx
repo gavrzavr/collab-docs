@@ -437,22 +437,63 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   // for a few hundred ms because the page just switched (the editor remounts
   // by `key={activePageId}`, so the DOM nodes for the new page don't exist
   // until React commits them).
+  //
+  // Two scroll-correctness traps we work around:
+  //
+  //  1. Layout drift. BlockNote streams blocks into the DOM as React commits
+  //     them; the doc's total height grows for several frames after the
+  //     element first appears. Scrolling immediately would lock onto a stale
+  //     position. Fix: do a second-pass scroll ~500ms later that re-measures
+  //     the target's coordinates and corrects any drift.
+  //
+  //  2. Sticky toolbar overlap + "centered" feels wrong for navigation. The
+  //     previous version used `block: "center"` which puts the target at
+  //     viewport mid-height — visually noisy when the user just wanted to
+  //     "go to that block." Notion-style behavior (target near top with a
+  //     little headroom) feels more like a directed jump. We compute the
+  //     scrollTop manually against the inner scroll container so headers
+  //     and tab bars don't get in the way.
   useEffect(() => {
-    if (!pendingScrollBlockId) return;
+    if (!pendingScrollBlockId || !scrollEl) return;
     let cancelled = false;
     let attempt = 0;
     const MAX_ATTEMPTS = 30; // ~3s at 100ms intervals
+    const HEADROOM_PX = 24;
+
+    const scrollTo = (el: HTMLElement) => {
+      if (!scrollEl) return;
+      const elRect = el.getBoundingClientRect();
+      const containerRect = scrollEl.getBoundingClientRect();
+      const targetTop =
+        scrollEl.scrollTop + (elRect.top - containerRect.top) - HEADROOM_PX;
+      scrollEl.scrollTo({
+        top: Math.max(0, targetTop),
+        behavior: "smooth",
+      });
+    };
+
     const tryScroll = () => {
       if (cancelled) return;
       const el = document.querySelector(
         `[data-id="${CSS.escape(pendingScrollBlockId)}"]`
       ) as HTMLElement | null;
       if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        scrollTo(el);
         el.classList.add("bn-highlight-target");
-        setTimeout(() => el.classList.remove("bn-highlight-target"), 2200);
+        // Layout-drift correction: re-scroll after BlockNote has had time to
+        // finish committing all blocks above ours. Cheap, idempotent.
+        const driftCorrect = setTimeout(() => {
+          if (!cancelled) scrollTo(el);
+        }, 500);
+        const removeHighlight = setTimeout(
+          () => el.classList.remove("bn-highlight-target"),
+          2200
+        );
         setPendingScrollBlockId(null);
-        return;
+        return () => {
+          clearTimeout(driftCorrect);
+          clearTimeout(removeHighlight);
+        };
       }
       if (attempt++ < MAX_ATTEMPTS) setTimeout(tryScroll, 100);
       else setPendingScrollBlockId(null);
@@ -461,7 +502,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     return () => {
       cancelled = true;
     };
-  }, [pendingScrollBlockId, activePageId]);
+  }, [pendingScrollBlockId, activePageId, scrollEl]);
 
   // ── Intercept clicks on intra-doc anchor links ─────────────────────
   //
@@ -469,6 +510,13 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   // so a vanilla click would do a full page reload. We intercept clicks on
   // links that point to THIS doc's URL with a hash and route them through
   // hash navigation instead — instant, no reload, IDB cache stays warm.
+  //
+  // Back-button restoration: before pushing the new entry, we replaceState
+  // on the CURRENT entry with the active page id and current scroll position.
+  // When the user presses back, popstate fires with that saved state, and the
+  // popstate effect below restores tab + scroll. Without this the user lands
+  // at the top of the previous tab — frustrating when they were halfway down
+  // a long doc and just wanted to "peek" at a referenced block.
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       // Only plain left-click — let modifier-clicks open in new tab.
@@ -491,7 +539,22 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
       ) {
         e.preventDefault();
         if (window.location.hash !== url.hash) {
-          window.history.pushState(null, "", url.hash);
+          // Stamp the source position onto the current entry so back returns
+          // here with full fidelity. JSON.stringify-safe payload.
+          try {
+            window.history.replaceState(
+              {
+                __pp: true,
+                pageId: activePageId,
+                scrollY: scrollEl?.scrollTop ?? 0,
+              },
+              "",
+              window.location.href
+            );
+          } catch {
+            /* some browsers reject huge state objects — ours is tiny, ignore */
+          }
+          window.history.pushState({ __pp: true, navigated: true }, "", url.hash);
           window.dispatchEvent(new HashChangeEvent("hashchange"));
         } else {
           // Same hash already — re-trigger the scroll/highlight effect.
@@ -502,7 +565,32 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     };
     document.addEventListener("click", handler, true);
     return () => document.removeEventListener("click", handler, true);
-  }, [id]);
+  }, [id, activePageId, scrollEl]);
+
+  // ── Restore tab + scroll on browser back/forward ──────────────────
+  //
+  // popstate fires AFTER the URL has been rolled to the previous entry, but
+  // BEFORE our hashchange handler runs (both fire on the same browser
+  // navigation). We rely on hashchange to switch the tab; we use popstate
+  // only to schedule the scroll restoration, then defer it until the new
+  // page has had time to render.
+  //
+  // The 250ms delay is empirical: enough for React + BlockNote to commit
+  // the page switch, before BlockNote's own auto-scroll-to-cursor (which
+  // tries to keep the editor cursor in view) fights us.
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      const state = e.state as { __pp?: true; scrollY?: number } | null;
+      if (state?.__pp && typeof state.scrollY === "number") {
+        const savedScrollY = state.scrollY;
+        setTimeout(() => {
+          if (scrollEl) scrollEl.scrollTop = savedScrollY;
+        }, 250);
+      }
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [scrollEl]);
 
   // True once we have everything needed to mount the editor: user is set,
   // provider is open, we're synced, and we've resolved at least one page.
