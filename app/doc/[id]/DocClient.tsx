@@ -511,6 +511,21 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   // links that point to THIS doc's URL with a hash and route them through
   // hash navigation instead — instant, no reload, IDB cache stays warm.
   //
+  // Why we ALSO intercept mousedown: ProseMirror does not look at click
+  // events to detect "single click on link." It listens to `mousedown`,
+  // creates an internal MouseDown helper, then watches for the matching
+  // mouseup on `view.root` (bubble phase). When that mouseup fires, PM
+  // iterates plugins' `handleClick` props — and Tiptap's link extension
+  // (which BlockNote enables with `openOnClick: true`) calls
+  // `window.open(href, "_blank")`. Spurious new browser tab.
+  //
+  // Result: capture-phase `click` interception alone is too late — the
+  // new tab is already opening. We have to kill the event chain at
+  // mousedown so PM never starts the MouseDown lifecycle for our link.
+  // Stack trace observed in DevTools (PM 1.40):
+  //   window.open ← Tiptap.handleClick ← runHandlerOnContext
+  //   ← view.someProp("handleClick") ← MouseDown.up ← mouseup
+  //
   // Back-button restoration: before pushing the new entry, we replaceState
   // on the CURRENT entry with the active page id and current scroll position.
   // When the user presses back, popstate fires with that saved state, and the
@@ -518,6 +533,45 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   // at the top of the previous tab — frustrating when they were halfway down
   // a long doc and just wanted to "peek" at a referenced block.
   useEffect(() => {
+    const isIntraDocLink = (e: MouseEvent): URL | null => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return null;
+      const link = (e.target as HTMLElement | null)?.closest?.("a");
+      if (!link) return null;
+      const href = link.getAttribute("href");
+      if (!href) return null;
+      let url: URL;
+      try {
+        url = new URL(href, window.location.href);
+      } catch {
+        return null;
+      }
+      if (
+        url.origin !== window.location.origin ||
+        url.pathname !== `/doc/${id}` ||
+        !url.hash
+      )
+        return null;
+      return url;
+    };
+
+    // mousedown: shut PM out before it sets up its MouseDown lifecycle.
+    // Without this, PM hears mouseup → fires Tiptap's handleClick →
+    // window.open spawns a new browser tab. preventDefault stops focus
+    // / native drag init for the link, both of which we don't want for
+    // an intra-doc nav anyway.
+    const downHandler = (e: MouseEvent) => {
+      if (!isIntraDocLink(e)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
+    // mouseup: defense in depth — if PM somehow still got the mousedown
+    // (shadow DOM, future PM rewrite), the mouseup capture stop kills
+    // the handleClick dispatch.
+    const upHandler = (e: MouseEvent) => {
+      if (!isIntraDocLink(e)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
     const handler = (e: MouseEvent) => {
       // Only plain left-click — let modifier-clicks open in new tab.
       if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -575,9 +629,16 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         }
       }
     };
-    // Capture-phase so we run before ProseMirror's bubble-phase listener.
+    // Capture-phase so we run before ProseMirror's bubble-phase listeners.
+    // mousedown is the critical one — see the comment block above for why.
+    document.addEventListener("mousedown", downHandler, true);
+    document.addEventListener("mouseup", upHandler, true);
     document.addEventListener("click", handler, true);
-    return () => document.removeEventListener("click", handler, true);
+    return () => {
+      document.removeEventListener("mousedown", downHandler, true);
+      document.removeEventListener("mouseup", upHandler, true);
+      document.removeEventListener("click", handler, true);
+    };
   }, [id, activePageId, scrollEl]);
 
   // ── Restore tab + scroll on browser back/forward ──────────────────
