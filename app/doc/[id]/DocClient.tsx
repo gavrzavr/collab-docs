@@ -538,6 +538,14 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         url.hash
       ) {
         e.preventDefault();
+        // Kill Tiptap's link plugin too — its click handler defaults to
+        // `openOnClick: true` and would *also* call window.open(href,
+        // "_blank") in addition to our hash-nav. That second tab loading
+        // up was Daria's "после клика открывается первый таб" report —
+        // a fresh load before pages were populated, briefly visible.
+        // stopImmediatePropagation prevents the bubble from reaching
+        // ProseMirror's view.dom click listener.
+        e.stopImmediatePropagation();
         if (window.location.hash !== url.hash) {
           // Stamp the source position onto the current entry so back returns
           // here with full fidelity. JSON.stringify-safe payload.
@@ -555,7 +563,11 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
             /* some browsers reject huge state objects — ours is tiny, ignore */
           }
           window.history.pushState({ __pp: true, navigated: true }, "", url.hash);
-          window.dispatchEvent(new HashChangeEvent("hashchange"));
+          // Use plain Event — `new HashChangeEvent()` isn't a constructable
+          // class in every browser engine (Safari quirks). Our listener
+          // re-reads window.location.hash anyway, so old/newURL on the
+          // event object are unused.
+          window.dispatchEvent(new Event("hashchange"));
         } else {
           // Same hash already — re-trigger the scroll/highlight effect.
           const { blockId } = parseHash(url.hash);
@@ -563,6 +575,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         }
       }
     };
+    // Capture-phase so we run before ProseMirror's bubble-phase listener.
     document.addEventListener("click", handler, true);
     return () => document.removeEventListener("click", handler, true);
   }, [id, activePageId, scrollEl]);
