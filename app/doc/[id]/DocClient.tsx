@@ -124,41 +124,69 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
    *  simpler and doesn't depend on React commit timing. */
   const scrollElRef = useRef<HTMLElement | null>(null);
   const scrollToBlock = useCallback((blockId: string) => {
-    // TEMP debug — remove once we've confirmed the code path runs in prod.
-    // The DevTools session showed scrollTop staying at 0 after a click;
-    // we couldn't tell whether the React handler was failing to call
-    // this function, or if the function was being called and the scroll
-    // was being clobbered by PM's auto-scroll-to-cursor. console.log
-    // resolves the ambiguity.
-    console.log("[pp:scroll] scrollToBlock called, blockId=", blockId);
     let attempt = 0;
     const HEADROOM_PX = 24;
     const MAX_ATTEMPTS = 30;
+
+    // BlockNote re-renders aggressively on click (PM transactions, link
+    // toolbar mount, selection sync). The DOM node we found in `tick()`
+    // can be DETACHED by the time the deferred RAF/setTimeout fires —
+    // a detached node's getBoundingClientRect returns 0,0, which made
+    // our scrollTop calculation negative (clamped to 0 → no scroll).
+    // Diagnosed via console.log in prod: calc=-117.5 = (0 - 94 [container
+    // rect top] - 24 [headroom]) instead of the expected ~938. Fix: ALWAYS
+    // re-query the live DOM by id inside doScroll, never trust a captured
+    // reference across an async boundary.
+    const doScroll = () => {
+      const live = document.querySelector(
+        `[data-id="${CSS.escape(blockId)}"].bn-block-outer`
+      ) as HTMLElement | null;
+      const container = scrollElRef.current;
+      if (!live || !container) return;
+      const elRect = live.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const top = container.scrollTop + (elRect.top - containerRect.top) - HEADROOM_PX;
+      container.scrollTop = Math.max(0, top);
+    };
+
+    const highlight = () => {
+      const live = document.querySelector(
+        `[data-id="${CSS.escape(blockId)}"].bn-block-outer`
+      ) as HTMLElement | null;
+      if (!live) return;
+      live.classList.add("bn-highlight-target");
+      setTimeout(() => {
+        // Re-query because the element may have been re-mounted in the
+        // meantime; remove the class from whichever node currently holds
+        // the id. Running on the original `live` would silently no-op
+        // if it's been replaced.
+        const cur = document.querySelector(
+          `[data-id="${CSS.escape(blockId)}"].bn-block-outer`
+        ) as HTMLElement | null;
+        if (cur) cur.classList.remove("bn-highlight-target");
+        else live.classList.remove("bn-highlight-target");
+      }, 2200);
+    };
+
     const tick = () => {
       const el = document.querySelector(
-        `[data-id="${CSS.escape(blockId)}"]`
+        `[data-id="${CSS.escape(blockId)}"].bn-block-outer`
       ) as HTMLElement | null;
       const container = scrollElRef.current;
       if (el && container) {
-        console.log("[pp:scroll] found el, attempt=", attempt, "container.scrollTop=", container.scrollTop);
-        const doScroll = (label: string) => {
-          const elRect = el.getBoundingClientRect();
-          const containerRect = container.getBoundingClientRect();
-          const top = container.scrollTop + (elRect.top - containerRect.top) - HEADROOM_PX;
-          const clamped = Math.max(0, top);
-          console.log("[pp:scroll] doScroll", label, "before=", container.scrollTop, "calc=", top, "set=", clamped);
-          container.scrollTop = clamped;
-          console.log("[pp:scroll] doScroll", label, "after=", container.scrollTop);
-        };
-        requestAnimationFrame(() => doScroll("raf"));
-        setTimeout(() => doScroll("t250"), 250);
-        setTimeout(() => doScroll("t500"), 500);
-        el.classList.add("bn-highlight-target");
-        setTimeout(() => el.classList.remove("bn-highlight-target"), 2200);
+        // Trigger three scroll passes — each re-queries the DOM, so any
+        // re-mount between passes is harmless. Three passes catch:
+        //   raf — beats PM's mid-click scroll-to-cursor
+        //   t250 — fires after BlockNote's "selection settled" re-render
+        //   t500 — corrects for layout drift as filler blocks above
+        //          finish committing height changes
+        requestAnimationFrame(doScroll);
+        setTimeout(doScroll, 250);
+        setTimeout(doScroll, 500);
+        highlight();
         return;
       }
       if (attempt++ < MAX_ATTEMPTS) setTimeout(tick, 100);
-      else console.log("[pp:scroll] gave up, never found el for", blockId);
     };
     tick();
   }, []);
