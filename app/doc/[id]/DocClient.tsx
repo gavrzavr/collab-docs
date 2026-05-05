@@ -114,13 +114,45 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   // ── Pages ──────────────────────────────────────────────────────────
   const [pages, setPages] = useState<PageMeta[]>([]);
   const [activePageId, setActivePageIdState] = useState<string>(FIRST_PAGE_ID);
-  /** Block id we should scroll to + highlight after the editor mounts.
-   *  Set when the hash carries `pageId.blockId` (e.g. user pasted an
-   *  intra-doc link); consumed by the scroll-and-flash effect once the
-   *  target page is rendered. */
-  const [pendingScrollBlockId, setPendingScrollBlockId] = useState<string | null>(null);
   /** Link picker (slash command "Link to block") state. */
   const [linkPickerOpen, setLinkPickerOpen] = useState(false);
+  /** Imperative scroll-to-block. Stable across renders via useRef holding
+   *  the latest scrollEl. We avoid React state for the pending block id
+   *  because the state→effect cycle introduced a self-cancellation race
+   *  in DevTools (RAF saw cancelled=true from the cleanup that fired
+   *  when the effect set the state to null). Direct DOM manipulation is
+   *  simpler and doesn't depend on React commit timing. */
+  const scrollElRef = useRef<HTMLElement | null>(null);
+  const scrollToBlock = useCallback((blockId: string) => {
+    let attempt = 0;
+    const HEADROOM_PX = 24;
+    const MAX_ATTEMPTS = 30;
+    const tick = () => {
+      const el = document.querySelector(
+        `[data-id="${CSS.escape(blockId)}"]`
+      ) as HTMLElement | null;
+      const container = scrollElRef.current;
+      if (el && container) {
+        const doScroll = () => {
+          const elRect = el.getBoundingClientRect();
+          const containerRect = container.getBoundingClientRect();
+          const top = container.scrollTop + (elRect.top - containerRect.top) - HEADROOM_PX;
+          container.scrollTop = Math.max(0, top);
+        };
+        // Two-pass: first frame to beat PM's auto-scroll-to-cursor on
+        // click, second pass at 250ms to correct for layout drift as
+        // BlockNote streams blocks above us.
+        requestAnimationFrame(doScroll);
+        setTimeout(doScroll, 250);
+        // Visual feedback — yellow flash for 2.2s.
+        el.classList.add("bn-highlight-target");
+        setTimeout(() => el.classList.remove("bn-highlight-target"), 2200);
+        return;
+      }
+      if (attempt++ < MAX_ATTEMPTS) setTimeout(tick, 100);
+    };
+    tick();
+  }, []);
 
   // Push active page id to the URL hash so deep-links survive reloads and
   // can be shared internally (e.g. "open the API specs tab directly").
@@ -150,6 +182,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
 
   const handleScrollRef = useCallback((node: HTMLDivElement | null) => {
     setScrollEl(node);
+    scrollElRef.current = node;
   }, []);
 
   const registerImportHtml = useCallback((fn: (html: string) => void) => {
@@ -378,6 +411,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     const { pageId, blockId } = parseHash(raw);
 
     let targetPageId = pages[0]?.id || FIRST_PAGE_ID;
+    let scrollTarget: string | null = null;
     if (pageId && pages.some((p) => p.id === pageId)) {
       targetPageId = pageId;
     } else if (pageId && !blockId) {
@@ -387,15 +421,20 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         const found = extractBlocks(ydoc, p.id).some((b) => b.id === pageId);
         if (found) {
           targetPageId = p.id;
-          setPendingScrollBlockId(pageId);
+          scrollTarget = pageId;
           break;
         }
       }
     }
-    if (blockId) setPendingScrollBlockId(blockId);
+    if (blockId) scrollTarget = blockId;
     if (targetPageId !== activePageId) {
       setActivePageIdState(targetPageId);
     }
+    // Defer the scroll one tick — the editor may need to remount with a new
+    // fragment if we just switched tabs. scrollToBlock polls for the block
+    // element so it'll wait for the new render anyway, but giving it a head
+    // start avoids a couple of failed attempts.
+    if (scrollTarget) setTimeout(() => scrollToBlock(scrollTarget), 0);
     // One-shot resolver — subsequent navigation flows through setActivePageId
     // and the hashchange listener below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -406,127 +445,39 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     const onHash = () => {
       const { pageId, blockId } = parseHash(window.location.hash);
       let targetPageId: string | null = null;
+      let scrollTarget: string | null = null;
       if (pageId && pages.some((p) => p.id === pageId)) {
         targetPageId = pageId;
       } else if (pageId && !blockId) {
         for (const p of pages) {
           if (extractBlocks(ydoc, p.id).some((b) => b.id === pageId)) {
             targetPageId = p.id;
-            setPendingScrollBlockId(pageId);
+            scrollTarget = pageId;
             break;
           }
         }
       } else if (!pageId) {
         targetPageId = FIRST_PAGE_ID;
       }
-      if (blockId) setPendingScrollBlockId(blockId);
+      if (blockId) scrollTarget = blockId;
       if (targetPageId && targetPageId !== activePageId) {
         setActivePageIdState(targetPageId);
-      } else if (blockId) {
-        // Same page, just need to (re-)trigger the scroll/highlight effect.
-        // setPendingScrollBlockId already done above.
       }
+      // Imperative scroll. scrollToBlock is stable and polls for the
+      // element, so it works whether the page is already mounted or
+      // about to remount due to the setActivePageIdState above.
+      if (scrollTarget) setTimeout(() => scrollToBlock(scrollTarget), 0);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
-  }, [pages, activePageId, ydoc]);
+  }, [pages, activePageId, ydoc, scrollToBlock]);
 
-  // ── Scroll to + briefly highlight a block once the target page is mounted ─
-  //
-  // BlockNote sets `data-id="<blockId>"` on each `.bn-block-outer`. We poll
-  // for a few hundred ms because the page just switched (the editor remounts
-  // by `key={activePageId}`, so the DOM nodes for the new page don't exist
-  // until React commits them).
-  //
-  // Two scroll-correctness traps we work around:
-  //
-  //  1. Layout drift. BlockNote streams blocks into the DOM as React commits
-  //     them; the doc's total height grows for several frames after the
-  //     element first appears. Scrolling immediately would lock onto a stale
-  //     position. Fix: do a second-pass scroll ~500ms later that re-measures
-  //     the target's coordinates and corrects any drift.
-  //
-  //  2. Sticky toolbar overlap + "centered" feels wrong for navigation. The
-  //     previous version used `block: "center"` which puts the target at
-  //     viewport mid-height — visually noisy when the user just wanted to
-  //     "go to that block." Notion-style behavior (target near top with a
-  //     little headroom) feels more like a directed jump. We compute the
-  //     scrollTop manually against the inner scroll container so headers
-  //     and tab bars don't get in the way.
-  useEffect(() => {
-    if (!pendingScrollBlockId || !scrollEl) return;
-    let cancelled = false;
-    let attempt = 0;
-    const MAX_ATTEMPTS = 30; // ~3s at 100ms intervals
-    const HEADROOM_PX = 24;
-
-    // Two-step scroll, both `behavior: "auto"` (instant), no smooth.
-    // Smooth scrolling on intra-doc nav loses to ProseMirror's auto-scroll-
-    // to-cursor: clicking the link places PM's cursor inside the source
-    // paragraph, PM's view update fires `scrollIntoView` for that cursor,
-    // and that brand-new scroll request cancels our in-flight smooth
-    // animation — we'd land 5px down instead of 900. Instant scroll wins
-    // the race because it commits the new scrollTop in the same tick.
-    //
-    // Visually, a near-instant jump on intra-doc navigation feels right
-    // anyway: it's a directed teleport, not a reading-flow scroll. The
-    // 2.2s yellow flash on .bn-highlight-target carries the "you arrived"
-    // feedback that a long smooth animation would otherwise communicate.
-    const scrollTo = (el: HTMLElement) => {
-      if (!scrollEl) return;
-      const elRect = el.getBoundingClientRect();
-      const containerRect = scrollEl.getBoundingClientRect();
-      const targetTop =
-        scrollEl.scrollTop + (elRect.top - containerRect.top) - HEADROOM_PX;
-      scrollEl.scrollTop = Math.max(0, targetTop);
-    };
-
-    // Tracking timers so the cleanup can clear them. We do NOT clear the
-    // RAF — once scheduled it'll fire next frame and check `cancelled`.
-    let driftCorrect: ReturnType<typeof setTimeout> | null = null;
-    let removeHighlight: ReturnType<typeof setTimeout> | null = null;
-
-    const tryScroll = () => {
-      if (cancelled) return;
-      const el = document.querySelector(
-        `[data-id="${CSS.escape(pendingScrollBlockId)}"]`
-      ) as HTMLElement | null;
-      if (el) {
-        // First scroll: defer one frame so PM's mid-click cursor-into-view
-        // pass runs first; we land where we want, not where PM does.
-        requestAnimationFrame(() => {
-          if (!cancelled) scrollTo(el);
-        });
-        el.classList.add("bn-highlight-target");
-        // Layout-drift correction: re-scroll after BlockNote has had time
-        // to finish committing all blocks above ours (height grows for
-        // several frames as React commits) and after PM's late
-        // scroll-to-cursor passes have settled. Cheap, idempotent.
-        driftCorrect = setTimeout(() => {
-          if (!cancelled) scrollTo(el);
-        }, 250);
-        // Remove the highlight, then clear the pending state. This is the
-        // ONLY place that sets pendingScrollBlockId(null), because doing
-        // it earlier (synchronously inside this effect) would cause an
-        // immediate re-render → cleanup → `cancelled=true` BEFORE the
-        // RAF fires, and the scroll would no-op. Bug observed in DevTools
-        // 2026-05-04: link click set the hash but scrollTop stayed 0.
-        removeHighlight = setTimeout(() => {
-          el.classList.remove("bn-highlight-target");
-          setPendingScrollBlockId(null);
-        }, 2200);
-        return;
-      }
-      if (attempt++ < MAX_ATTEMPTS) setTimeout(tryScroll, 100);
-      else setPendingScrollBlockId(null);
-    };
-    tryScroll();
-    return () => {
-      cancelled = true;
-      if (driftCorrect) clearTimeout(driftCorrect);
-      if (removeHighlight) clearTimeout(removeHighlight);
-    };
-  }, [pendingScrollBlockId, activePageId, scrollEl]);
+  // (The old useState+useEffect scroll mechanism was removed in favour of
+  //  the imperative `scrollToBlock` defined above. Cycle was: hashchange →
+  //  setPendingScrollBlockId(blockId) → effect runs → effect schedules
+  //  scroll AND sets state to null → re-render → cleanup runs cancelled=true
+  //  BEFORE the RAF fires → no scroll. Direct DOM manipulation has no such
+  //  ordering hazard.)
 
   // ── Intercept clicks on intra-doc anchor links ─────────────────────
   //
@@ -647,9 +598,9 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
           // event object are unused.
           window.dispatchEvent(new Event("hashchange"));
         } else {
-          // Same hash already — re-trigger the scroll/highlight effect.
+          // Same hash already — re-trigger the scroll/highlight directly.
           const { blockId } = parseHash(url.hash);
-          if (blockId) setPendingScrollBlockId(blockId);
+          if (blockId) scrollToBlock(blockId);
         }
       }
     };
