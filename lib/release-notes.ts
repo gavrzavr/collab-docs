@@ -17,7 +17,7 @@
  *      both 0.5.0 and 0.6.0 notes on first call after the 0.6.0 deploy.
  */
 
-export const MCP_SERVER_VERSION = "0.6.2";
+export const MCP_SERVER_VERSION = "0.7.0";
 
 export const RELEASE_NOTES: Record<string, string> = {
   "0.5.0":
@@ -34,6 +34,8 @@ export const RELEASE_NOTES: Record<string, string> = {
     "create_table tool description cleaned up — removed the obsolete 'KNOWN ISSUE: close other tabs' warning that Claude was still reading after the v0.6.0 fix. New tables work fine with any number of open tabs. Description now also tells Claude how to repair pre-v0.6.0 broken tables (delete + recreate).",
   "0.6.2":
     "When you paste a postpaper.co URL into a fresh Claude chat, Claude will now read it via the PostPaper MCP instead of trying WebFetch (which only saw the login page and gave up). Strengthened the read_document tool description with an explicit URL trigger. After reconnect, just paste the link — Claude will recognize and open it directly.",
+  "0.7.0":
+    "Intra-doc links — Claude can now insert markdown links pointing at any specific block or tab inside a PostPaper document. Click the link in the editor and you jump straight to that block (switching tabs if needed) with a brief yellow highlight. URL format is `…/doc/<id>#<pageId>.<blockId>`, surfaced in the read_document output for easy substitution. Ask Claude things like 'add a link from the summary back to the methodology section' and it can wire it up.",
 };
 
 /** Compares two semver-ish version strings ("a.b.c"). Returns -/0/+. */
