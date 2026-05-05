@@ -481,6 +481,11 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
       scrollEl.scrollTop = Math.max(0, targetTop);
     };
 
+    // Tracking timers so the cleanup can clear them. We do NOT clear the
+    // RAF — once scheduled it'll fire next frame and check `cancelled`.
+    let driftCorrect: ReturnType<typeof setTimeout> | null = null;
+    let removeHighlight: ReturnType<typeof setTimeout> | null = null;
+
     const tryScroll = () => {
       if (cancelled) return;
       const el = document.querySelector(
@@ -497,18 +502,20 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         // to finish committing all blocks above ours (height grows for
         // several frames as React commits) and after PM's late
         // scroll-to-cursor passes have settled. Cheap, idempotent.
-        const driftCorrect = setTimeout(() => {
+        driftCorrect = setTimeout(() => {
           if (!cancelled) scrollTo(el);
         }, 250);
-        const removeHighlight = setTimeout(
-          () => el.classList.remove("bn-highlight-target"),
-          2200
-        );
-        setPendingScrollBlockId(null);
-        return () => {
-          clearTimeout(driftCorrect);
-          clearTimeout(removeHighlight);
-        };
+        // Remove the highlight, then clear the pending state. This is the
+        // ONLY place that sets pendingScrollBlockId(null), because doing
+        // it earlier (synchronously inside this effect) would cause an
+        // immediate re-render → cleanup → `cancelled=true` BEFORE the
+        // RAF fires, and the scroll would no-op. Bug observed in DevTools
+        // 2026-05-04: link click set the hash but scrollTop stayed 0.
+        removeHighlight = setTimeout(() => {
+          el.classList.remove("bn-highlight-target");
+          setPendingScrollBlockId(null);
+        }, 2200);
+        return;
       }
       if (attempt++ < MAX_ATTEMPTS) setTimeout(tryScroll, 100);
       else setPendingScrollBlockId(null);
@@ -516,6 +523,8 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     tryScroll();
     return () => {
       cancelled = true;
+      if (driftCorrect) clearTimeout(driftCorrect);
+      if (removeHighlight) clearTimeout(removeHighlight);
     };
   }, [pendingScrollBlockId, activePageId, scrollEl]);
 
