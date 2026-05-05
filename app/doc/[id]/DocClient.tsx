@@ -10,6 +10,8 @@ import Toolbar from "@/components/Toolbar";
 import DocPreview from "@/components/DocPreview";
 import OutlinePanel from "@/components/OutlinePanel";
 import PageTabs, { type PageMeta } from "@/components/PageTabs";
+import LinkPicker, { type LinkTarget } from "@/components/LinkPicker";
+import { extractBlocks } from "@/lib/yjs-blocks";
 
 const Editor = dynamic(() => import("@/components/Editor"), { ssr: false });
 
@@ -56,6 +58,30 @@ interface DocClientProps {
 const FIRST_PAGE_ID = "blocknote";
 const DEFAULT_FIRST_PAGE_TITLE = "Page 1";
 
+/**
+ * Parse a URL hash into the optional page + block we should jump to.
+ *
+ * Hash grammar:
+ *   #pageId            → switch to that tab (existing behavior)
+ *   #pageId.blockId    → switch to that tab AND scroll/highlight blockId
+ *   #blockId           → scroll/highlight blockId (page resolved by lookup)
+ *
+ * Nanoids never contain dots, so the dot is an unambiguous separator.
+ * Returning null fields means "no constraint at this level."
+ */
+function parseHash(rawHash: string): { pageId: string | null; blockId: string | null } {
+  const cleaned = rawHash.replace(/^#/, "");
+  if (!cleaned) return { pageId: null, blockId: null };
+  const dotIdx = cleaned.indexOf(".");
+  if (dotIdx >= 0) {
+    return {
+      pageId: cleaned.slice(0, dotIdx) || null,
+      blockId: cleaned.slice(dotIdx + 1) || null,
+    };
+  }
+  return { pageId: cleaned, blockId: null };
+}
+
 export default function DocClient({ id, initialBlocks, shareToken, sessionToken, role, isOwner }: DocClientProps) {
   const readOnly = role === "viewer";
   const [user, setUser] = useState<{ name: string; color: string; image?: string } | null>(null);
@@ -88,6 +114,13 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   // ── Pages ──────────────────────────────────────────────────────────
   const [pages, setPages] = useState<PageMeta[]>([]);
   const [activePageId, setActivePageIdState] = useState<string>(FIRST_PAGE_ID);
+  /** Block id we should scroll to + highlight after the editor mounts.
+   *  Set when the hash carries `pageId.blockId` (e.g. user pasted an
+   *  intra-doc link); consumed by the scroll-and-flash effect once the
+   *  target page is rendered. */
+  const [pendingScrollBlockId, setPendingScrollBlockId] = useState<string | null>(null);
+  /** Link picker (slash command "Link to block") state. */
+  const [linkPickerOpen, setLinkPickerOpen] = useState(false);
 
   // Push active page id to the URL hash so deep-links survive reloads and
   // can be shared internally (e.g. "open the API specs tab directly").
@@ -332,34 +365,144 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     };
   }, [synced, ydoc, readOnly]);
 
-  // ── Resolve initial active page from URL hash ──────────────────────
+  // ── Resolve initial active page (and pending block scroll) from hash ─
+  //
+  // Hash forms (see parseHash):
+  //   #pageId           → switch tab
+  //   #pageId.blockId   → switch tab + scroll to block
+  //   #blockId          → scroll to block on whichever page contains it
+  //                       (the lookup pass runs after pages are loaded)
   useEffect(() => {
     if (!synced || pages.length === 0) return;
-    const hash = typeof window !== "undefined" ? window.location.hash.replace(/^#/, "") : "";
-    const requested = hash || FIRST_PAGE_ID;
-    const exists = pages.some((p) => p.id === requested);
-    const target = exists ? requested : pages[0]?.id || FIRST_PAGE_ID;
-    if (target !== activePageId) {
-      setActivePageIdState(target);
+    const raw = typeof window !== "undefined" ? window.location.hash : "";
+    const { pageId, blockId } = parseHash(raw);
+
+    let targetPageId = pages[0]?.id || FIRST_PAGE_ID;
+    if (pageId && pages.some((p) => p.id === pageId)) {
+      targetPageId = pageId;
+    } else if (pageId && !blockId) {
+      // pageId is in fact a block id (no dot in hash, hash is unknown
+      // page). Search all fragments for that block and route to its page.
+      for (const p of pages) {
+        const found = extractBlocks(ydoc, p.id).some((b) => b.id === pageId);
+        if (found) {
+          targetPageId = p.id;
+          setPendingScrollBlockId(pageId);
+          break;
+        }
+      }
     }
-    // Intentionally depends only on synced + pages count, not activePageId —
-    // this effect is a one-shot resolver. Subsequent tab switches go through
-    // setActivePageId().
+    if (blockId) setPendingScrollBlockId(blockId);
+    if (targetPageId !== activePageId) {
+      setActivePageIdState(targetPageId);
+    }
+    // One-shot resolver — subsequent navigation flows through setActivePageId
+    // and the hashchange listener below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [synced, pages.length]);
 
-  // ── React to browser back/forward changing the hash ────────────────
+  // ── React to hash changes (back/forward, intra-doc link clicks) ────
   useEffect(() => {
     const onHash = () => {
-      const hash = window.location.hash.replace(/^#/, "");
-      const next = hash || FIRST_PAGE_ID;
-      if (pages.some((p) => p.id === next) && next !== activePageId) {
-        setActivePageIdState(next);
+      const { pageId, blockId } = parseHash(window.location.hash);
+      let targetPageId: string | null = null;
+      if (pageId && pages.some((p) => p.id === pageId)) {
+        targetPageId = pageId;
+      } else if (pageId && !blockId) {
+        for (const p of pages) {
+          if (extractBlocks(ydoc, p.id).some((b) => b.id === pageId)) {
+            targetPageId = p.id;
+            setPendingScrollBlockId(pageId);
+            break;
+          }
+        }
+      } else if (!pageId) {
+        targetPageId = FIRST_PAGE_ID;
+      }
+      if (blockId) setPendingScrollBlockId(blockId);
+      if (targetPageId && targetPageId !== activePageId) {
+        setActivePageIdState(targetPageId);
+      } else if (blockId) {
+        // Same page, just need to (re-)trigger the scroll/highlight effect.
+        // setPendingScrollBlockId already done above.
       }
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
-  }, [pages, activePageId]);
+  }, [pages, activePageId, ydoc]);
+
+  // ── Scroll to + briefly highlight a block once the target page is mounted ─
+  //
+  // BlockNote sets `data-id="<blockId>"` on each `.bn-block-outer`. We poll
+  // for a few hundred ms because the page just switched (the editor remounts
+  // by `key={activePageId}`, so the DOM nodes for the new page don't exist
+  // until React commits them).
+  useEffect(() => {
+    if (!pendingScrollBlockId) return;
+    let cancelled = false;
+    let attempt = 0;
+    const MAX_ATTEMPTS = 30; // ~3s at 100ms intervals
+    const tryScroll = () => {
+      if (cancelled) return;
+      const el = document.querySelector(
+        `[data-id="${CSS.escape(pendingScrollBlockId)}"]`
+      ) as HTMLElement | null;
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("bn-highlight-target");
+        setTimeout(() => el.classList.remove("bn-highlight-target"), 2200);
+        setPendingScrollBlockId(null);
+        return;
+      }
+      if (attempt++ < MAX_ATTEMPTS) setTimeout(tryScroll, 100);
+      else setPendingScrollBlockId(null);
+    };
+    tryScroll();
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingScrollBlockId, activePageId]);
+
+  // ── Intercept clicks on intra-doc anchor links ─────────────────────
+  //
+  // BlockNote stores absolute URLs (`https://postpaper.co/doc/<id>#anchor`),
+  // so a vanilla click would do a full page reload. We intercept clicks on
+  // links that point to THIS doc's URL with a hash and route them through
+  // hash navigation instead — instant, no reload, IDB cache stays warm.
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      // Only plain left-click — let modifier-clicks open in new tab.
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const link = (e.target as HTMLElement | null)?.closest?.("a");
+      if (!link) return;
+      const href = link.getAttribute("href");
+      if (!href) return;
+      let url: URL;
+      try {
+        url = new URL(href, window.location.href);
+      } catch {
+        return;
+      }
+      // Same origin, same /doc/:id path, with a hash → intra-doc link.
+      if (
+        url.origin === window.location.origin &&
+        url.pathname === `/doc/${id}` &&
+        url.hash
+      ) {
+        e.preventDefault();
+        if (window.location.hash !== url.hash) {
+          window.history.pushState(null, "", url.hash);
+          window.dispatchEvent(new HashChangeEvent("hashchange"));
+        } else {
+          // Same hash already — re-trigger the scroll/highlight effect.
+          const { blockId } = parseHash(url.hash);
+          if (blockId) setPendingScrollBlockId(blockId);
+        }
+      }
+    };
+    document.addEventListener("click", handler, true);
+    return () => document.removeEventListener("click", handler, true);
+  }, [id]);
 
   // True once we have everything needed to mount the editor: user is set,
   // provider is open, we're synced, and we've resolved at least one page.
@@ -367,6 +510,82 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     () => Boolean(user && provider && synced && pages.length > 0),
     [user, provider, synced, pages.length]
   );
+
+  // ── Link picker: build target list from all pages of the doc ──────
+  //
+  // Recompiled on demand (when the picker opens) rather than continuously,
+  // because walking every fragment of every page on every keystroke would
+  // burn cycles for nothing. Stale-by-up-to-the-time-the-modal-opens is
+  // a fine tradeoff for this UX.
+  const buildLinkTargets = useCallback((): LinkTarget[] => {
+    const targets: LinkTarget[] = [];
+    for (const p of pages) {
+      targets.push({ kind: "page", pageId: p.id, pageTitle: p.title });
+      const blocks = extractBlocks(ydoc, p.id);
+      for (const b of blocks) {
+        // Skip blocks with empty/whitespace text — they're not useful link
+        // targets and would clutter the list. Headings and tables are
+        // exceptions: a heading without text is rare but a table without
+        // text is normal — keep tables, skip empty headings/paragraphs.
+        if (b.type !== "table" && b.type !== "htmlViz" && !b.text.trim()) continue;
+        targets.push({
+          kind: "block",
+          pageId: p.id,
+          pageTitle: p.title,
+          blockId: b.id,
+          blockType: b.type,
+          level: b.level,
+          text: b.text,
+        });
+      }
+    }
+    return targets;
+  }, [pages, ydoc]);
+
+  const [linkTargets, setLinkTargets] = useState<LinkTarget[]>([]);
+
+  const handleOpenLinkPicker = useCallback(() => {
+    setLinkTargets(buildLinkTargets());
+    setLinkPickerOpen(true);
+  }, [buildLinkTargets]);
+
+  const handlePickLink = useCallback(
+    (target: LinkTarget) => {
+      setLinkPickerOpen(false);
+      const ed = editor as
+        | {
+            insertInlineContent: (content: unknown[]) => void;
+            focus: () => void;
+          }
+        | null;
+      if (!ed) return;
+      const origin =
+        typeof window !== "undefined" ? window.location.origin : "https://postpaper.co";
+      const anchor =
+        target.kind === "page"
+          ? target.pageId
+          : `${target.pageId}.${target.blockId}`;
+      const url = `${origin}/doc/${id}#${anchor}`;
+      const label =
+        target.kind === "page"
+          ? target.pageTitle
+          : (target.text.trim() || target.pageTitle);
+      // Insert as a styled link at the cursor. BlockNote's link inline
+      // content type accepts {type: "link", href, content: [{type:"text"}]}.
+      try {
+        ed.insertInlineContent([
+          { type: "link", href: url, content: [{ type: "text", text: label, styles: {} }] },
+          { type: "text", text: " ", styles: {} },
+        ]);
+        ed.focus();
+      } catch (err) {
+        console.error("Failed to insert link:", err);
+      }
+    },
+    [editor, id]
+  );
+
+  const handleCloseLinkPicker = useCallback(() => setLinkPickerOpen(false), []);
 
   if (!checked) return null;
 
@@ -484,8 +703,10 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
                   userName={user.name}
                   userColor={user.color}
                   docId={id}
+                  activePageId={activePageId}
                   registerImportHtml={registerImportHtml}
                   registerEditor={handleRegisterEditor}
+                  onOpenLinkPicker={handleOpenLinkPicker}
                   readOnly={readOnly}
                 />
               )}
@@ -493,6 +714,12 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
           </div>
         </div>
       </div>
+      <LinkPicker
+        open={linkPickerOpen}
+        targets={linkTargets}
+        onSelect={handlePickLink}
+        onClose={handleCloseLinkPicker}
+      />
     </div>
   );
 }

@@ -8,12 +8,14 @@ import {
   useBlockNoteEditor, useComponentsContext, useEditorState,
   SideMenuController, SideMenu,
   DragHandleMenu, BlockColorsItem, RemoveBlockItem,
+  SuggestionMenuController, getDefaultReactSlashMenuItems,
 } from "@blocknote/react";
-import type { BlockTypeSelectItem } from "@blocknote/react";
+import type { BlockTypeSelectItem, DefaultReactSuggestionItem } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
 import { createExtension } from "@blocknote/core";
 import { TurnIntoItem } from "./TurnIntoItem";
-import { RiText, RiH1, RiH2, RiH3, RiListUnordered, RiListOrdered, RiListCheck3, RiQuoteText } from "react-icons/ri";
+import { CopyLinkItem } from "./CopyLinkItem";
+import { RiText, RiH1, RiH2, RiH3, RiListUnordered, RiListOrdered, RiListCheck3, RiQuoteText, RiLinkM } from "react-icons/ri";
 import * as Y from "yjs";
 import type { WebsocketProvider } from "y-websocket";
 import { useEffect, useMemo } from "react";
@@ -45,8 +47,16 @@ interface EditorProps {
   /** The doc's id (route param), used to scope image uploads to this doc
    *  for orphan-GC and observability. */
   docId: string;
+  /** Active page id at mount time. Threaded into the drag-handle "Copy
+   *  link" item so the URL it copies points to the right tab. */
+  activePageId: string;
   registerImportHtml?: (fn: (html: string) => void) => void;
   registerEditor?: (editor: unknown) => void;
+  /** Called when the user picks the "Link to block" slash-menu item.
+   *  Parent (DocClient) opens a fuzzy-search modal of every tab and
+   *  block in the doc; on select it inserts a link at the editor's
+   *  current cursor position. */
+  onOpenLinkPicker?: () => void;
   /** Disable edits in the UI. The ws-server enforces this server-side too
    *  (viewer tokens have their sync updates dropped). */
   readOnly?: boolean;
@@ -99,7 +109,7 @@ function CollabBlockTypeSelect() {
   return <Components.FormattingToolbar.Select className="bn-select" items={selectItems} />;
 }
 
-export default function Editor({ ydoc, provider, fragmentName, userName, userColor, docId, registerImportHtml, registerEditor, readOnly }: EditorProps) {
+export default function Editor({ ydoc, provider, fragmentName, userName, userColor, docId, activePageId, registerImportHtml, registerEditor, onOpenLinkPicker, readOnly }: EditorProps) {
   // Resolve the fragment from the shared ydoc. Memoized on fragmentName so
   // useCreateBlockNote gets a stable reference per page — when fragmentName
   // changes (tab switch), the parent should remount us via a React key, which
@@ -155,7 +165,7 @@ export default function Editor({ ydoc, provider, fragmentName, userName, userCol
   }, [editor, registerImportHtml]);
 
   return (
-    <BlockNoteView editor={editor} theme="light" formattingToolbar={false} sideMenu={false} editable={!readOnly}>
+    <BlockNoteView editor={editor} theme="light" formattingToolbar={false} sideMenu={false} slashMenu={false} editable={!readOnly}>
       <FormattingToolbarController
         formattingToolbar={() => {
           const defaultItems = getFormattingToolbarItems();
@@ -168,8 +178,10 @@ export default function Editor({ ydoc, provider, fragmentName, userName, userCol
           );
         }}
       />
-      {/* Custom drag-handle menu with "Turn into" — Notion-like quick block-type switching
-          without selecting text. Default BlockNote drag-handle menu only has Delete + Colors. */}
+      {/* Custom drag-handle menu with "Turn into" + "Copy link" — Notion-like
+          quick block-type switching and intra-doc deep-linking without
+          first selecting text. Default BlockNote drag-handle menu only
+          has Delete + Colors. */}
       <SideMenuController
         sideMenu={(props) => (
           <SideMenu
@@ -177,12 +189,46 @@ export default function Editor({ ydoc, provider, fragmentName, userName, userCol
             dragHandleMenu={() => (
               <DragHandleMenu>
                 <TurnIntoItem>Turn into</TurnIntoItem>
+                <CopyLinkItem docId={docId} activePageId={activePageId}>
+                  Copy link
+                </CopyLinkItem>
                 <RemoveBlockItem>Delete</RemoveBlockItem>
                 <BlockColorsItem>Colors</BlockColorsItem>
               </DragHandleMenu>
             )}
           />
         )}
+      />
+      {/* Custom slash menu — defaults + "Link to block". Selecting "Link
+          to block" delegates to the parent (DocClient), which opens a
+          fuzzy-search modal of every tab and block. On pick, the parent
+          inserts a styled link at the cursor.
+          Disabled the built-in slashMenu={false} above so this controller
+          is the single source of truth — otherwise both render. */}
+      <SuggestionMenuController
+        triggerCharacter={"/"}
+        getItems={async (query) => {
+          const defaults = getDefaultReactSlashMenuItems(editor);
+          const linkItem: DefaultReactSuggestionItem = {
+            title: "Link to block",
+            subtext: "Insert a link to a tab or block in this document",
+            icon: <RiLinkM size={18} />,
+            group: "Other",
+            aliases: ["link", "ref", "reference", "mention", "anchor"],
+            onItemClick: () => {
+              onOpenLinkPicker?.();
+            },
+          };
+          const all = [...defaults, linkItem];
+          const q = query.toLowerCase().trim();
+          if (!q) return all;
+          return all.filter((it) => {
+            const hay =
+              (it.title + " " + (it.subtext || "") + " " + (it.aliases || []).join(" "))
+                .toLowerCase();
+            return hay.includes(q);
+          });
+        }}
       />
     </BlockNoteView>
   );
