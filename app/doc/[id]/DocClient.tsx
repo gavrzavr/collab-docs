@@ -733,24 +733,25 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   }, [ydoc, commentsTick]);
 
   // Apply `.pp-has-comment` to the rendered block-outer for each block id
-  // in commentBlockIds. Yellow left-border + tint marker. Re-runs on
-  // commentsTick (anchor set changed) AND activePageId (BlockNote remount
-  // means the DOM nodes are fresh and need the class re-applied).
-  // Polling tail: BlockNote streams blocks into the DOM over the first
-  // few hundred ms after a tab switch; we poll every 100ms × 30 to catch
-  // late-mounted blocks. Cheap, idempotent.
+  // in commentBlockIds. Yellow left-border + tint marker.
+  //
+  // BlockNote/ProseMirror manages the DOM under .bn-container and resets
+  // unknown classes/attributes on every view-update transaction. The
+  // first implementation just polled `apply()` 30× over 3s — that worked
+  // briefly and then PM's next render stripped the class for good. Fix:
+  // a MutationObserver on the editor root re-applies the class on EVERY
+  // mutation. The work is O(comment-count), trivially cheap. Idempotent
+  // because we always wipe + repaint the full set.
   useEffect(() => {
     if (!editorReady) return;
-    let attempt = 0;
-    const MAX = 30;
     const APPLY = "pp-has-comment";
     const apply = () => {
       const root = document;
-      // First: clear stale class everywhere — easier than diffing.
+      // Wipe stale, then add to current set. Wipe-then-set is simpler
+      // than diffing and the cost is negligible.
       root
         .querySelectorAll(`.${APPLY}`)
         .forEach((el) => el.classList.remove(APPLY));
-      // Second: add to current set.
       for (const id of commentBlockIds) {
         const el = root.querySelector(
           `[data-id="${CSS.escape(id)}"].bn-block-outer`
@@ -758,12 +759,32 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         if (el) el.classList.add(APPLY);
       }
     };
+    // Initial paint — runs synchronously after the React render that
+    // changed commentBlockIds.
     apply();
-    const interval = setInterval(() => {
-      apply();
-      if (attempt++ >= MAX) clearInterval(interval);
-    }, 100);
-    return () => clearInterval(interval);
+    // PM re-render watcher. Every time the editor DOM mutates we
+    // re-apply, so the class survives transactions / cursor moves /
+    // selection changes / everything PM does to its subtree.
+    const editorRoot = document.querySelector(".bn-container");
+    let scheduled = false;
+    const obs = new MutationObserver(() => {
+      // Coalesce many mutations within the same frame into one apply.
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        apply();
+      });
+    });
+    if (editorRoot) {
+      obs.observe(editorRoot, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class"],
+      });
+    }
+    return () => obs.disconnect();
   }, [commentBlockIds, activePageId, editorReady]);
 
   const handleAddCommentForBlock = useCallback((blockId: string) => {
