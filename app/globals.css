@@ -221,19 +221,20 @@ body {
   box-shadow: inset 3px 0 0 0 #fcd34d;
 }
 
-/* ─── Block-jump target highlight ────────────────────────────────────
+/* ─── Block-jump target flash ────────────────────────────────────
    Used both for intra-doc links AND for "Go to block" clicks in the
-   comments panel. The flash needs to clearly identify WHICH block —
-   Mikhail 06.05.2026: when jumping from a comment, "I want the whole
-   block to highlight yellow at that moment, so I understand which
-   exact block this comment is anchored to."
-   Hold-then-fade pattern: full opacity + a 4px outer ring for the first
-   2.5s so the user has plenty of time to notice and read, then 1.5s
-   fade out (4s total). Box-shadow draws an outline OUTSIDE the block
-   bounds so the highlight is visible even on white-background blocks
-   and blends nicely with the .pp-has-comment left bar without
-   conflicting. */
-@keyframes bn-highlight-fade {
+   comments panel. Mikhail 06.05.2026: "I want the whole block to
+   highlight yellow at that moment, so I understand which exact
+   block this comment is anchored to."
+   Rendered as an absolute overlay div in document.body (NOT a class
+   on .bn-block-outer). Reason: ProseMirror strips any non-standard
+   class from its managed subtree before the animation can play.
+   DocClient creates a `.pp-block-flash` overlay positioned over the
+   target block, runs the keyframe, then removes the overlay after 4s.
+   Hold-then-fade: full opacity for the first 60% (~2.4s), fade out
+   over the last 40% (~1.6s). 4px outer ring + tint together so the
+   block reads as "this is the one." */
+@keyframes pp-block-flash {
   0% {
     background-color: rgba(253, 224, 71, 0.5);
     box-shadow: 0 0 0 4px rgba(253, 224, 71, 0.5);
@@ -247,9 +248,12 @@ body {
     box-shadow: 0 0 0 4px transparent;
   }
 }
-.bn-highlight-target {
-  animation: bn-highlight-fade 4s ease-out;
+.pp-block-flash {
+  position: fixed;
+  pointer-events: none;
+  z-index: 6; /* above the comment marker overlay */
   border-radius: 4px;
+  animation: pp-block-flash 4s ease-out forwards;
 }
 
 /* Name prompt overlay */

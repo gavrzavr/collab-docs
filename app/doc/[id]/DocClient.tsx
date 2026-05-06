@@ -160,26 +160,41 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
       container.scrollTop = Math.max(0, top);
     };
 
-    const highlight = () => {
-      const live = document.querySelector(
-        `[data-id="${CSS.escape(blockId)}"].bn-block-outer`
-      ) as HTMLElement | null;
-      if (!live) return;
-      live.classList.add("bn-highlight-target");
-      // Match the 4s `bn-highlight-fade` keyframe — keep the class on the
-      // node until the animation has fully faded, then remove so future
-      // jumps can re-trigger the same animation cleanly.
-      setTimeout(() => {
-        // Re-query because the element may have been re-mounted in the
-        // meantime; remove the class from whichever node currently holds
-        // the id. Running on the original `live` would silently no-op
-        // if it's been replaced.
-        const cur = document.querySelector(
+    // Highlight as a body overlay (NOT classList on .bn-block-outer).
+    // Same reason as the comment marker: ProseMirror strips any
+    // non-standard class from its managed subtree within milliseconds
+    // — the 4s animation never plays. The overlay rectangle is parked
+    // outside PM's reach (document.body) and tracks the block by
+    // re-querying its rect on a tick; the CSS animation runs without
+    // anyone fighting us.
+    const flash = () => {
+      const overlay = document.createElement("div");
+      overlay.className = "pp-block-flash";
+      document.body.appendChild(overlay);
+      let stopped = false;
+      const place = () => {
+        const live = document.querySelector(
           `[data-id="${CSS.escape(blockId)}"].bn-block-outer`
         ) as HTMLElement | null;
-        if (cur) cur.classList.remove("bn-highlight-target");
-        else live.classList.remove("bn-highlight-target");
-      }, 4000);
+        if (!live) return;
+        const r = live.getBoundingClientRect();
+        overlay.style.left = `${Math.round(r.left - 10)}px`;
+        overlay.style.top = `${Math.round(r.top + 2)}px`;
+        overlay.style.width = `${Math.round(r.width + 14)}px`;
+        overlay.style.height = `${Math.round(r.height - 4)}px`;
+      };
+      place();
+      // Track the block during the animation in case the user (or PM)
+      // shifts the doc — the flash should stay glued to its target.
+      const trackInterval = setInterval(() => {
+        if (stopped) return;
+        place();
+      }, 100);
+      setTimeout(() => {
+        stopped = true;
+        clearInterval(trackInterval);
+        try { document.body.removeChild(overlay); } catch { /* gone */ }
+      }, 4100);
     };
 
     const tick = () => {
@@ -197,7 +212,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         requestAnimationFrame(doScroll);
         setTimeout(doScroll, 250);
         setTimeout(doScroll, 500);
-        highlight();
+        flash();
         return;
       }
       if (attempt++ < MAX_ATTEMPTS) setTimeout(tick, 100);
