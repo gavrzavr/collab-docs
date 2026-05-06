@@ -17,13 +17,9 @@ interface ToolbarProps {
    *  "everything is fine" — without this, a silent WS drop looks identical to
    *  normal operation until reload reveals lost work. */
   wsStatus?: "connecting" | "connected" | "offline";
-  /** Comments panel toggle state + handler + active-thread count. */
-  commentsOpen?: boolean;
-  onToggleComments?: () => void;
-  unresolvedCommentCount?: number;
 }
 
-export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, isOwner, wsStatus, commentsOpen, onToggleComments, unresolvedCommentCount }: ToolbarProps) {
+export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, isOwner, wsStatus }: ToolbarProps) {
   const [copied, setCopied] = useState<"edit" | "view" | "ai" | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [mintingView, setMintingView] = useState(false);
@@ -255,34 +251,6 @@ export default function Toolbar({ docId, sessionUser, onImportHtml, readOnly, is
             : "Offline"}
           </span>
         </div>
-      )}
-
-      {/* Comments panel toggle. Surfaced before Share so the unresolved
-          count gets prime real-estate — Daria 06.05.2026 wants to see at
-          a glance whether there's anything pending. Hidden on mobile; the
-          panel itself is hidden < lg breakpoint anyway. */}
-      {onToggleComments && (
-        <button
-          type="button"
-          onClick={onToggleComments}
-          aria-label="Toggle comments panel"
-          aria-pressed={!!commentsOpen}
-          className={[
-            "hidden lg:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-sm rounded-md transition-colors whitespace-nowrap shrink-0",
-            commentsOpen
-              ? "bg-amber-100 text-amber-900 hover:bg-amber-200"
-              : "bg-gray-100 hover:bg-gray-200 text-gray-700",
-          ].join(" ")}
-          title={commentsOpen ? "Hide comments" : "Show comments"}
-        >
-          <span aria-hidden>💬</span>
-          <span>Comments</span>
-          {(unresolvedCommentCount ?? 0) > 0 && (
-            <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[11px] font-semibold bg-amber-500 text-white rounded-full">
-              {unresolvedCommentCount}
-            </span>
-          )}
-        </button>
       )}
 
       {/* 1. Share (dropdown: edit link + view link) */}

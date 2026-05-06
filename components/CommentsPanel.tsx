@@ -65,8 +65,6 @@ interface CommentsPanelProps {
   /** Cleared after the user actually submits a comment, so the next
    *  click of the per-block trigger sets a fresh target. */
   onComposeTargetUsed: () => void;
-  /** Called when user dismisses the panel. */
-  onClose: () => void;
 }
 
 export default function CommentsPanel({
@@ -78,7 +76,6 @@ export default function CommentsPanel({
   readOnly,
   composeTargetBlockId,
   onComposeTargetUsed,
-  onClose,
 }: CommentsPanelProps) {
   // Bump on every Yjs comments-map change to force re-derivation.
   const [tick, setTick] = useState(0);
@@ -283,31 +280,24 @@ export default function CommentsPanel({
       aria-label="Comments"
       className="hidden lg:flex flex-shrink-0 w-[320px] flex-col border-l border-gray-200 bg-gray-50/50"
     >
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-        <div>
-          <div className="text-sm font-semibold text-gray-900">Comments</div>
-          <div className="text-[11px] text-gray-500 mt-0.5">
-            {unresolvedCount === 0
-              ? "No active threads"
-              : `${unresolvedCount} active thread${unresolvedCount === 1 ? "" : "s"}`}
-          </div>
+      <div className="px-4 py-3 border-b border-gray-200">
+        <div className="text-sm font-semibold text-gray-900">Comments</div>
+        <div className="text-[11px] text-gray-500 mt-0.5">
+          {unresolvedCount === 0
+            ? "No active threads"
+            : `${unresolvedCount} active thread${unresolvedCount === 1 ? "" : "s"}`}
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-gray-400 hover:text-gray-700 text-lg leading-none px-1"
-          aria-label="Close comments panel"
-          title="Close"
-        >
-          ×
-        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-2">
         {sortedThreads.length === 0 ? (
-          <div className="text-xs text-gray-400 px-2 py-4 leading-relaxed">
-            No comments yet. Hover any block and click the 💬 icon (or use the
-            drag-handle menu → Comment) to start a thread.
+          <div className="text-xs text-gray-500 px-2 py-4 leading-relaxed space-y-2">
+            <p className="text-gray-700 font-medium">No comments yet.</p>
+            <p>
+              Hover any block in the document — a <span aria-hidden>💬</span>{" "}
+              icon appears on the right. Click it to start a thread anchored to
+              that block.
+            </p>
           </div>
         ) : (
           <ul className="list-none p-0 m-0 space-y-2">

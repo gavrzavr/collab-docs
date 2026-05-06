@@ -118,15 +118,14 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   const [activePageId, setActivePageIdState] = useState<string>(FIRST_PAGE_ID);
   /** Link picker (slash command "Link to block") state. */
   const [linkPickerOpen, setLinkPickerOpen] = useState(false);
-  /** Comments panel state. Default-open on desktop so the user sees the
-   *  feature exists; their toggle preference persists per doc via
-   *  localStorage. */
-  const [commentsPanelOpen, setCommentsPanelOpenState] = useState<boolean>(true);
+  /** Comments composer target — set when the user clicks the per-block
+   *  hover icon (or drag-handle → Comment) so the panel's input pre-fills
+   *  the right block. The panel itself is always visible; this is just
+   *  the "compose mode" indicator. */
   const [composeTargetBlockId, setComposeTargetBlockId] = useState<string | null>(
     null
   );
-  /** Bumped on every Yjs comments-map change so `commentBlockIds` and the
-   *  unresolved-count for the toolbar badge re-derive. */
+  /** Bumped on every Yjs comments-map change so `commentBlockIds` re-derives. */
   const [commentsTick, setCommentsTick] = useState(0);
   /** Imperative scroll-to-block. Stable across renders via useRef holding
    *  the latest scrollEl. We avoid React state for the pending block id
@@ -733,18 +732,6 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ydoc, commentsTick]);
 
-  const unresolvedThreadCount = useMemo<number>(() => {
-    const all = listComments(ydoc);
-    const rootIds = new Set<string>();
-    for (const c of all) {
-      if (c.resolved) continue;
-      const rootId = c.parentId ?? c.id;
-      rootIds.add(rootId);
-    }
-    return rootIds.size;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ydoc, commentsTick]);
-
   // Apply `.pp-has-comment` to the rendered block-outer for each block id
   // in commentBlockIds. Yellow left-border + tint marker. Re-runs on
   // commentsTick (anchor set changed) AND activePageId (BlockNote remount
@@ -779,31 +766,87 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     return () => clearInterval(interval);
   }, [commentBlockIds, activePageId, editorReady]);
 
-  // Persist the panel-open preference per doc.
-  const commentsPanelStorageKey = `pp:commentsPanelOpen:${id}`;
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const stored = window.localStorage.getItem(commentsPanelStorageKey);
-    if (stored !== null) {
-      setCommentsPanelOpenState(stored === "1");
-    }
-  }, [commentsPanelStorageKey]);
-  const setCommentsPanelOpen = useCallback(
-    (next: boolean) => {
-      setCommentsPanelOpenState(next);
-      try {
-        window.localStorage.setItem(commentsPanelStorageKey, next ? "1" : "0");
-      } catch {
-        /* private mode — fine, just won't persist */
-      }
-    },
-    [commentsPanelStorageKey]
-  );
-
   const handleAddCommentForBlock = useCallback((blockId: string) => {
     setComposeTargetBlockId(blockId);
-    setCommentsPanelOpen(true);
-  }, [setCommentsPanelOpen]);
+  }, []);
+
+  // ── Per-block hover trigger (`💬`) ─────────────────────────────────
+  //
+  // Discoverability: a "Comment" item lives in the drag-handle menu, but
+  // users (Mikhail 06.05.2026) don't intuitively click the 6-dot grip when
+  // they want to leave a comment — that's the icon for "drag/menu," not
+  // for commenting. Add a dedicated trigger that pops out to the right of
+  // every block on hover. One click → the composer in the right panel
+  // pre-fills the block id and focuses.
+  //
+  // Implementation: append a `<button>` child to each `.bn-block-outer`.
+  // CSS shows it on hover via `.bn-block-outer:hover > .pp-comment-trigger`.
+  // A MutationObserver re-attaches when BlockNote streams new blocks.
+  // We DON'T fight BlockNote's ProseMirror DOM management because the
+  // button is appended OUTSIDE the contenteditable subtree's interest —
+  // BlockNote treats unknown children as stable.
+  useEffect(() => {
+    if (!editorReady || readOnly || !sessionUser) return;
+    const root = document;
+    const CLS = "pp-comment-trigger";
+    let lastHoveredBlockId: string | null = null;
+
+    const attach = () => {
+      const blocks = root.querySelectorAll<HTMLElement>(
+        ".bn-block-outer[data-id]"
+      );
+      blocks.forEach((el) => {
+        if (el.querySelector(`:scope > .${CLS}`)) return;
+        const id = el.dataset.id;
+        if (!id) return;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = CLS;
+        btn.title = "Add comment";
+        btn.setAttribute("aria-label", "Add comment to this block");
+        btn.textContent = "💬";
+        btn.addEventListener("mousedown", (e) => {
+          // Stop PM from picking this up as a doc click — would shift
+          // selection out of the block we're commenting on.
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          // Use lastHoveredBlockId if the live id changed (block remount),
+          // otherwise prefer the freshest id on the parent.
+          const liveParent = btn.parentElement as HTMLElement | null;
+          const targetId = liveParent?.dataset.id || id;
+          handleAddCommentForBlock(targetId);
+        });
+        el.appendChild(btn);
+      });
+    };
+
+    attach();
+    // BlockNote streams blocks in over the first ~200-500ms and on every
+    // edit. Watch for new block-outer nodes and attach.
+    const obs = new MutationObserver(() => attach());
+    const editorRoot = document.querySelector(".bn-container");
+    if (editorRoot) obs.observe(editorRoot, { childList: true, subtree: true });
+
+    // Track lastHoveredBlockId — used when the button is clicked but the
+    // block was just remounted and its data-id might be stale.
+    const onMove = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      const outer = t?.closest?.(".bn-block-outer") as HTMLElement | null;
+      if (outer?.dataset.id) lastHoveredBlockId = outer.dataset.id;
+    };
+    document.addEventListener("mousemove", onMove);
+
+    return () => {
+      obs.disconnect();
+      document.removeEventListener("mousemove", onMove);
+      // Don't remove existing buttons on cleanup — React may rerun this
+      // effect frequently; idempotent attach skips already-installed nodes.
+    };
+  }, [editorReady, activePageId, readOnly, sessionUser, handleAddCommentForBlock]);
 
   // Click on a thread in the panel → switch tab if needed, then scroll.
   const handleJumpToCommentBlock = useCallback(
@@ -910,9 +953,6 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         readOnly={readOnly}
         isOwner={isOwner}
         wsStatus={wsStatus}
-        commentsOpen={commentsPanelOpen}
-        onToggleComments={() => setCommentsPanelOpen(!commentsPanelOpen)}
-        unresolvedCommentCount={unresolvedThreadCount}
       />
 
       {/* Read-only banner. Without this users land on /v/:token, see a normal-
@@ -1032,7 +1072,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
             </div>
           </div>
         </div>
-        {commentsPanelOpen && editorReady && (
+        {editorReady && (
           <CommentsPanel
             ydoc={ydoc}
             scrollContainer={scrollEl}
@@ -1050,7 +1090,6 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
             readOnly={readOnly}
             composeTargetBlockId={composeTargetBlockId}
             onComposeTargetUsed={() => setComposeTargetBlockId(null)}
-            onClose={() => setCommentsPanelOpen(false)}
           />
         )}
       </div>
