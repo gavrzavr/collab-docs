@@ -557,8 +557,22 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
       } catch {
         return null;
       }
+      // Host comparison treats apex and www. as the same logical origin.
+      // Daria 06.05.2026: she had a link in the form `https://postpaper.co/...`
+      // (no www) while viewing the doc on `https://www.postpaper.co/...`. The
+      // strict `url.origin !== window.location.origin` check failed, so we
+      // didn't intercept; Tiptap opened a new tab via window.open; the apex
+      // host hit Vercel's www redirect; HTTP redirects DROP the URL fragment;
+      // new tab loaded with no hash → no scroll. Visible symptom: "открывает
+      // новую страницу, не открывает нужный раздел". Normalising the host
+      // strips this mismatch so we always intra-tab nav regardless of which
+      // form was pasted.
+      const sameHost =
+        url.protocol === window.location.protocol &&
+        url.host.replace(/^www\./, "") ===
+          window.location.host.replace(/^www\./, "");
       if (
-        url.origin !== window.location.origin ||
+        !sameHost ||
         url.pathname !== `/doc/${id}` ||
         !url.hash
       )
