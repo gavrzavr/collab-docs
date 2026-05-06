@@ -167,12 +167,23 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     // outside PM's reach (document.body) and tracks the block by
     // re-querying its rect on a tick; the CSS animation runs without
     // anyone fighting us.
+    //
+    // Tracking strategy: a setInterval re-positions every 100ms (in a
+    // background or test-throttled tab the interval may degrade to
+    // ~1Hz, which leaves the flash visually misaligned for up to a
+    // second after a scroll). To cover the throttle scenario AND keep
+    // the flash glued tight in foreground, ALSO listen to scroll on
+    // scrollElRef + ResizeObserver on the live block + RAF passes
+    // synchronised with the scroll-to-block ramp. Combined coverage
+    // means any movement of the target re-places the overlay within
+    // a frame regardless of timer throttling.
     const flash = () => {
       const overlay = document.createElement("div");
       overlay.className = "pp-block-flash";
       document.body.appendChild(overlay);
       let stopped = false;
       const place = () => {
+        if (stopped) return;
         const live = document.querySelector(
           `[data-id="${CSS.escape(blockId)}"].bn-block-outer`
         ) as HTMLElement | null;
@@ -183,18 +194,31 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         overlay.style.width = `${Math.round(r.width + 14)}px`;
         overlay.style.height = `${Math.round(r.height - 4)}px`;
       };
+      // Multi-pass placement timed with the scroll ramp so the flash
+      // catches up with the block within a frame in any tab state.
       place();
-      // Track the block during the animation in case the user (or PM)
-      // shifts the doc — the flash should stay glued to its target.
-      const trackInterval = setInterval(() => {
-        if (stopped) return;
-        place();
-      }, 100);
-      setTimeout(() => {
+      requestAnimationFrame(place);
+      const t1 = setTimeout(place, 100);
+      const t2 = setTimeout(place, 300);
+      const t3 = setTimeout(place, 600);
+      const trackInterval = setInterval(place, 100);
+      // Snap on scroll — beats timer throttling.
+      const onScroll = () => place();
+      const sc = scrollElRef.current;
+      if (sc) sc.addEventListener("scroll", onScroll, { passive: true });
+      window.addEventListener("resize", onScroll);
+      const cleanupTimer = setTimeout(() => {
         stopped = true;
         clearInterval(trackInterval);
+        clearTimeout(t1);
+        clearTimeout(t2);
+        clearTimeout(t3);
+        if (sc) sc.removeEventListener("scroll", onScroll);
+        window.removeEventListener("resize", onScroll);
         try { document.body.removeChild(overlay); } catch { /* gone */ }
       }, 4100);
+      // No external cleanup needed — cleanupTimer fires unconditionally.
+      void cleanupTimer;
     };
 
     const tick = () => {
