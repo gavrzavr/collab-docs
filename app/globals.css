@@ -169,24 +169,37 @@ body {
    — ProseMirror sweeps unknown children from its managed subtrees, so
    appending the button there gets it nuked on the next view update).
    DocClient repositions the button on mouseover to follow the hovered
-   block. CSS just handles base appearance + pointer hover styling;
-   visibility (opacity / pointer-events) is driven by JS so we can sync
-   show/hide with the block-tracking logic.
-   Same architectural pattern as BlockNote's own +/⋮⋮ side menu. */
+   block. CSS just handles appearance; visibility is driven by JS.
+   Same architectural pattern as BlockNote's own +/⋮⋮ side menu.
+   Mikhail 06.05.2026: original pass was a bare emoji at 16px — invisible
+   in practice. This pass styles it as a proper button: white circle with
+   a soft shadow + amber-on-hover, big enough to clock at a glance. */
 .pp-comment-trigger {
   margin: 0;
-  padding: 2px 6px;
-  border: none;
-  background: transparent;
-  font-size: 16px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: #ffffff;
+  font-size: 15px;
   line-height: 1;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 50%;
   user-select: none;
-  transition: opacity 0.12s ease, background-color 0.12s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition:
+    opacity 0.12s ease,
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    transform 0.12s ease;
 }
 .pp-comment-trigger:hover {
-  background-color: rgba(0, 0, 0, 0.06);
+  background-color: #fef3c7; /* amber-100, matches the comment marker palette */
+  border-color: #fcd34d;     /* amber-300 */
+  transform: scale(1.06);
 }
 
 /* ─── Block has comment(s) — visual marker ──────────────────────────

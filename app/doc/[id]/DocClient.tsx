@@ -835,8 +835,8 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
       // the block's first text line (BlockNote pads outers with a small
       // top margin, so 4px down looks balanced).
       btn.style.left = `${Math.round(rect.right + 8)}px`;
-      btn.style.top = `${Math.round(rect.top + 2)}px`;
-      btn.style.opacity = "0.7";
+      btn.style.top = `${Math.round(rect.top - 2)}px`;
+      btn.style.opacity = "0.92";
       btn.style.pointerEvents = "auto";
       if (hideTimer) {
         clearTimeout(hideTimer);
@@ -883,7 +883,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
       }
     });
     btn.addEventListener("mouseleave", () => {
-      btn.style.opacity = "0.7";
+      btn.style.opacity = "0.92";
       scheduleHide();
     });
     btn.addEventListener("mousedown", (e) => {

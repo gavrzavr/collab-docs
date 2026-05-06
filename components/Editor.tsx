@@ -16,6 +16,7 @@ import { createExtension } from "@blocknote/core";
 import { TurnIntoItem } from "./TurnIntoItem";
 import { CopyLinkItem } from "./CopyLinkItem";
 import { CommentBlockMenuItem } from "./CommentBlockMenuItem";
+import { CommentSelectionButton } from "./CommentSelectionButton";
 import { RiText, RiH1, RiH2, RiH3, RiListUnordered, RiListOrdered, RiListCheck3, RiQuoteText, RiLinkM } from "react-icons/ri";
 import * as Y from "yjs";
 import type { WebsocketProvider } from "y-websocket";
@@ -174,11 +175,16 @@ export default function Editor({ ydoc, provider, fragmentName, userName, userCol
       <FormattingToolbarController
         formattingToolbar={() => {
           const defaultItems = getFormattingToolbarItems();
-          // Replace default BlockTypeSelect (first item) with our Yjs-compatible version
+          // Replace default BlockTypeSelect (first item) with our Yjs-compatible version.
+          // Append a Comment button at the end — discoverable entry point for
+          // commenting from a text selection (Notion / Docs muscle memory).
           return (
             <FormattingToolbar>
               <CollabBlockTypeSelect />
               {defaultItems.slice(1)}
+              {onAddComment && !readOnly && (
+                <CommentSelectionButton onAddComment={onAddComment} />
+              )}
             </FormattingToolbar>
           );
         }}
