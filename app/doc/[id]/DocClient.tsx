@@ -748,23 +748,39 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   useEffect(() => {
     if (!editorReady) return;
     const APPLY = "pp-has-comment";
-    const apply = () => {
+    // TEMP debug — remove once class-paint is verified in prod.
+    (window as unknown as { __ppPaintLog?: unknown[] }).__ppPaintLog =
+      (window as unknown as { __ppPaintLog?: unknown[] }).__ppPaintLog || [];
+    const log = (window as unknown as { __ppPaintLog: unknown[] }).__ppPaintLog;
+    const apply = (reason: string) => {
       const root = document;
+      const before = root.querySelectorAll(`.${APPLY}`).length;
       // Wipe stale, then add to current set. Wipe-then-set is simpler
       // than diffing and the cost is negligible.
       root
         .querySelectorAll(`.${APPLY}`)
         .forEach((el) => el.classList.remove(APPLY));
+      let added = 0;
       for (const id of commentBlockIds) {
         const el = root.querySelector(
           `[data-id="${CSS.escape(id)}"].bn-block-outer`
         );
-        if (el) el.classList.add(APPLY);
+        if (el) {
+          el.classList.add(APPLY);
+          added++;
+        }
       }
+      log.push({
+        reason,
+        ids: Array.from(commentBlockIds),
+        before,
+        added,
+        time: Math.round(performance.now()),
+      });
     };
     // Initial paint — runs synchronously after the React render that
     // changed commentBlockIds.
-    apply();
+    apply("effect-init");
     // PM re-render watcher. Every time the editor DOM mutates we
     // re-apply, so the class survives transactions / cursor moves /
     // selection changes / everything PM does to its subtree.
@@ -776,7 +792,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
       scheduled = true;
       requestAnimationFrame(() => {
         scheduled = false;
-        apply();
+        apply("mutation");
       });
     });
     if (editorRoot) {
