@@ -775,78 +775,128 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   // Discoverability: a "Comment" item lives in the drag-handle menu, but
   // users (Mikhail 06.05.2026) don't intuitively click the 6-dot grip when
   // they want to leave a comment — that's the icon for "drag/menu," not
-  // for commenting. Add a dedicated trigger that pops out to the right of
-  // every block on hover. One click → the composer in the right panel
-  // pre-fills the block id and focuses.
+  // for commenting. Add a dedicated trigger that follows the hovered
+  // block. One click → the composer in the right panel pre-fills the
+  // block id and focuses.
   //
-  // Implementation: append a `<button>` child to each `.bn-block-outer`.
-  // CSS shows it on hover via `.bn-block-outer:hover > .pp-comment-trigger`.
-  // A MutationObserver re-attaches when BlockNote streams new blocks.
-  // We DON'T fight BlockNote's ProseMirror DOM management because the
-  // button is appended OUTSIDE the contenteditable subtree's interest —
-  // BlockNote treats unknown children as stable.
+  // Implementation note (06.05.2026): the OBVIOUS approach was to append
+  // a button as a child of each `.bn-block-outer`. That FAILED in prod —
+  // ProseMirror manages the subtree under .bn-block-outer and silently
+  // removes unknown children on its next render pass. Instead we render
+  // ONE floating button into document.body and reposition it on
+  // mousemove to track whichever block-outer the cursor is currently
+  // over. Same approach BlockNote uses for its own +/⋮⋮ side-menu —
+  // the menu lives outside the editor DOM and is positioned by JS.
   useEffect(() => {
     if (!editorReady || readOnly || !sessionUser) return;
-    const root = document;
     const CLS = "pp-comment-trigger";
-    let lastHoveredBlockId: string | null = null;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = CLS;
+    btn.title = "Add comment";
+    btn.setAttribute("aria-label", "Add comment to this block");
+    btn.textContent = "💬";
+    btn.style.position = "fixed";
+    btn.style.zIndex = "30";
+    btn.style.opacity = "0";
+    btn.style.pointerEvents = "none";
+    document.body.appendChild(btn);
 
-    const attach = () => {
-      const blocks = root.querySelectorAll<HTMLElement>(
+    let currentBlockId: string | null = null;
+    let hideTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const show = (block: HTMLElement) => {
+      const id = block.dataset.id;
+      if (!id) return;
+      currentBlockId = id;
+      const rect = block.getBoundingClientRect();
+      // Sit just outside the block on the right; vertically aligned to
+      // the block's first text line (BlockNote pads outers with a small
+      // top margin, so 4px down looks balanced).
+      btn.style.left = `${Math.round(rect.right + 8)}px`;
+      btn.style.top = `${Math.round(rect.top + 2)}px`;
+      btn.style.opacity = "0.7";
+      btn.style.pointerEvents = "auto";
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+      }
+    };
+
+    const scheduleHide = () => {
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => {
+        btn.style.opacity = "0";
+        btn.style.pointerEvents = "none";
+        currentBlockId = null;
+        hideTimer = null;
+      }, 150);
+    };
+
+    const onMouseOver = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      // Hovering the button itself keeps it visible.
+      if (target === btn) {
+        if (hideTimer) {
+          clearTimeout(hideTimer);
+          hideTimer = null;
+        }
+        return;
+      }
+      const outer = target.closest?.(
         ".bn-block-outer[data-id]"
-      );
-      blocks.forEach((el) => {
-        if (el.querySelector(`:scope > .${CLS}`)) return;
-        const id = el.dataset.id;
-        if (!id) return;
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = CLS;
-        btn.title = "Add comment";
-        btn.setAttribute("aria-label", "Add comment to this block");
-        btn.textContent = "💬";
-        btn.addEventListener("mousedown", (e) => {
-          // Stop PM from picking this up as a doc click — would shift
-          // selection out of the block we're commenting on.
-          e.preventDefault();
-          e.stopPropagation();
-        });
-        btn.addEventListener("click", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          // Use lastHoveredBlockId if the live id changed (block remount),
-          // otherwise prefer the freshest id on the parent.
-          const liveParent = btn.parentElement as HTMLElement | null;
-          const targetId = liveParent?.dataset.id || id;
-          handleAddCommentForBlock(targetId);
-        });
-        el.appendChild(btn);
-      });
+      ) as HTMLElement | null;
+      if (outer) show(outer);
+      else scheduleHide();
     };
+    // Use mouseover (bubbles) over the editor area; mouseleave on the
+    // editor root hides the button when the cursor goes elsewhere.
+    document.addEventListener("mouseover", onMouseOver);
 
-    attach();
-    // BlockNote streams blocks in over the first ~200-500ms and on every
-    // edit. Watch for new block-outer nodes and attach.
-    const obs = new MutationObserver(() => attach());
-    const editorRoot = document.querySelector(".bn-container");
-    if (editorRoot) obs.observe(editorRoot, { childList: true, subtree: true });
+    btn.addEventListener("mouseenter", () => {
+      btn.style.opacity = "1";
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+      }
+    });
+    btn.addEventListener("mouseleave", () => {
+      btn.style.opacity = "0.7";
+      scheduleHide();
+    });
+    btn.addEventListener("mousedown", (e) => {
+      // Block PM from interpreting this as a doc click and shifting
+      // the cursor (or the link toolbar from popping for a nearby link).
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (currentBlockId) handleAddCommentForBlock(currentBlockId);
+    });
 
-    // Track lastHoveredBlockId — used when the button is clicked but the
-    // block was just remounted and its data-id might be stale.
-    const onMove = (e: MouseEvent) => {
-      const t = e.target as HTMLElement | null;
-      const outer = t?.closest?.(".bn-block-outer") as HTMLElement | null;
-      if (outer?.dataset.id) lastHoveredBlockId = outer.dataset.id;
+    // When the page scrolls or resizes, the captured rect goes stale.
+    // Re-show against the still-tracked block (if any) on the next frame.
+    const onLayoutChange = () => {
+      if (!currentBlockId) return;
+      const live = document.querySelector(
+        `.bn-block-outer[data-id="${CSS.escape(currentBlockId)}"]`
+      ) as HTMLElement | null;
+      if (live) show(live);
     };
-    document.addEventListener("mousemove", onMove);
+    if (scrollEl) scrollEl.addEventListener("scroll", onLayoutChange, { passive: true });
+    window.addEventListener("resize", onLayoutChange);
 
     return () => {
-      obs.disconnect();
-      document.removeEventListener("mousemove", onMove);
-      // Don't remove existing buttons on cleanup — React may rerun this
-      // effect frequently; idempotent attach skips already-installed nodes.
+      document.removeEventListener("mouseover", onMouseOver);
+      if (scrollEl) scrollEl.removeEventListener("scroll", onLayoutChange);
+      window.removeEventListener("resize", onLayoutChange);
+      if (hideTimer) clearTimeout(hideTimer);
+      try { document.body.removeChild(btn); } catch { /* already gone */ }
     };
-  }, [editorReady, activePageId, readOnly, sessionUser, handleAddCommentForBlock]);
+  }, [editorReady, readOnly, sessionUser, handleAddCommentForBlock, scrollEl]);
 
   // Click on a thread in the panel → switch tab if needed, then scroll.
   const handleJumpToCommentBlock = useCallback(

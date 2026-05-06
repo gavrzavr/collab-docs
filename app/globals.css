@@ -164,45 +164,29 @@ body {
   pointer-events: none !important;
 }
 
-/* ─── Per-block "Add comment" hover trigger ──────────────────────────
-   Discoverable affordance: when the user hovers a block, a `💬` button
-   pops out to the right. Click → opens the comments composer pre-filled
-   with that block as the target.
-   Injected by DocClient via DOM (button appended as child of each
-   .bn-block-outer). The buttons are NOT inside ProseMirror's
-   contenteditable subtree — they're a sibling of .bn-block — but
-   appending to .bn-block-outer keeps them positioned relative to the
-   block. */
-.bn-block-outer {
-  /* needed so .pp-comment-trigger's absolute positioning anchors here */
-  position: relative;
-}
-.bn-block-outer > .pp-comment-trigger {
-  position: absolute;
-  right: 0;
-  top: 0;
-  transform: translateX(100%);
-  margin-left: 8px;
+/* ─── Floating "Add comment" trigger ────────────────────────────────
+   Single button injected into document.body (NOT inside .bn-block-outer
+   — ProseMirror sweeps unknown children from its managed subtrees, so
+   appending the button there gets it nuked on the next view update).
+   DocClient repositions the button on mouseover to follow the hovered
+   block. CSS just handles base appearance + pointer hover styling;
+   visibility (opacity / pointer-events) is driven by JS so we can sync
+   show/hide with the block-tracking logic.
+   Same architectural pattern as BlockNote's own +/⋮⋮ side menu. */
+.pp-comment-trigger {
+  margin: 0;
   padding: 2px 6px;
   border: none;
   background: transparent;
-  font-size: 14px;
+  font-size: 16px;
+  line-height: 1;
   cursor: pointer;
   border-radius: 4px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.12s ease, background-color 0.12s ease;
   user-select: none;
-  line-height: 1.4;
+  transition: opacity 0.12s ease, background-color 0.12s ease;
 }
-.bn-block-outer:hover > .pp-comment-trigger,
-.bn-block-outer > .pp-comment-trigger:focus-visible {
-  opacity: 0.7;
-  pointer-events: auto;
-}
-.bn-block-outer > .pp-comment-trigger:hover {
-  opacity: 1;
-  background-color: rgba(0, 0, 0, 0.05);
+.pp-comment-trigger:hover {
+  background-color: rgba(0, 0, 0, 0.06);
 }
 
 /* ─── Block has comment(s) — visual marker ──────────────────────────
