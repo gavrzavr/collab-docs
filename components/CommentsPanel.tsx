@@ -58,6 +58,11 @@ interface CommentsPanelProps {
   /** When true, the composer is hidden and resolve/delete actions are
    *  read-only. Drives /v/:token viewer behaviour. */
   readOnly?: boolean;
+  /** Doc-owner gets the moderation power: delete ANY comment (not just
+   *  their own). Editing a stranger's text isn't allowed — that would be
+   *  rewriting someone else's words — but deletion as a spam/moderation
+   *  hammer is. */
+  isDocOwner?: boolean;
   /** Block id the composer should target on the next add. Set when the
    *  user clicks a per-block "Add comment" trigger — pre-fills the
    *  panel's compose target. Null = compose disabled (pick a block first). */
@@ -74,6 +79,7 @@ export default function CommentsPanel({
   onJumpTo,
   currentUser,
   readOnly,
+  isDocOwner,
   composeTargetBlockId,
   onComposeTargetUsed,
 }: CommentsPanelProps) {
@@ -332,9 +338,10 @@ export default function CommentsPanel({
                   </button>
                   <CommentRow
                     comment={thread.root}
-                    isOwner={
+                    isAuthor={
                       currentUser?.email === thread.root.author.email
                     }
+                    isDocOwner={!!isDocOwner}
                     readOnly={!!readOnly}
                     onResolve={() =>
                       handleResolve(thread.root.id, thread.root.resolved)
@@ -348,7 +355,8 @@ export default function CommentsPanel({
                         <CommentRow
                           key={r.id}
                           comment={r}
-                          isOwner={currentUser?.email === r.author.email}
+                          isAuthor={currentUser?.email === r.author.email}
+                          isDocOwner={!!isDocOwner}
                           readOnly={!!readOnly}
                           onResolve={() => handleResolve(r.id, r.resolved)}
                           onDelete={() => handleDelete(r.id)}
@@ -448,22 +456,31 @@ function hasUnresolvedReply(c: Comment, all: Comment[]): boolean {
   return false;
 }
 
-/** One comment line — author + relative time + text + actions. */
+/** One comment line — author + relative time + text + actions.
+ *
+ * Action visibility rules:
+ *   Resolve/Reopen: anyone non-readOnly (collaborative action)
+ *   Edit:           only the comment's author
+ *   Delete:         comment author OR doc owner (moderation)
+ */
 function CommentRow({
   comment,
-  isOwner,
+  isAuthor,
+  isDocOwner,
   readOnly,
   onResolve,
   onDelete,
   onEdit,
 }: {
   comment: Comment;
-  isOwner: boolean;
+  isAuthor: boolean;
+  isDocOwner: boolean;
   readOnly: boolean;
   onResolve: () => void;
   onDelete: () => void;
   onEdit: (newText: string) => void;
 }) {
+  const canDelete = isAuthor || isDocOwner;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(comment.text);
   useEffect(() => {
@@ -535,23 +552,28 @@ function CommentRow({
           >
             {comment.resolved ? "Reopen" : "Resolve"}
           </button>
-          {isOwner && (
-            <>
-              <button
-                type="button"
-                onClick={() => setEditing(true)}
-                className="hover:text-gray-700"
-              >
-                Edit
-              </button>
-              <button
-                type="button"
-                onClick={onDelete}
-                className="hover:text-rose-600"
-              >
-                Delete
-              </button>
-            </>
+          {isAuthor && (
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="hover:text-gray-700"
+            >
+              Edit
+            </button>
+          )}
+          {canDelete && (
+            <button
+              type="button"
+              onClick={onDelete}
+              className="hover:text-rose-600"
+              title={
+                isAuthor
+                  ? "Delete this comment"
+                  : "Delete (doc owner moderation)"
+              }
+            >
+              Delete
+            </button>
           )}
         </div>
       )}

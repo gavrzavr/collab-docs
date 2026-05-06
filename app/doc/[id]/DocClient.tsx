@@ -1088,6 +1088,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
                 : null
             }
             readOnly={readOnly}
+            isDocOwner={!!isOwner}
             composeTargetBlockId={composeTargetBlockId}
             onComposeTargetUsed={() => setComposeTargetBlockId(null)}
           />
