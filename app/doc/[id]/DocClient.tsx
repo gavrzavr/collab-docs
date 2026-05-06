@@ -750,50 +750,47 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     const APPLY = "pp-has-comment";
     const apply = () => {
       const root = document;
-      // Wipe stale, then add to current set. Wipe-then-set is simpler
-      // than diffing and the cost is negligible.
-      root
-        .querySelectorAll(`.${APPLY}`)
-        .forEach((el) => el.classList.remove(APPLY));
+      // Find blocks that currently have the class but shouldn't, and
+      // blocks that should have it but don't. Diff-based instead of
+      // wipe-and-set so we don't fight PM in a tight loop on every
+      // pass — only mutate when the desired state differs from current.
+      const present = new Set<string>();
+      for (const el of Array.from(
+        root.querySelectorAll(`.bn-block-outer.${APPLY}`)
+      )) {
+        const id = (el as HTMLElement).dataset.id;
+        if (id) present.add(id);
+        if (!id || !commentBlockIds.has(id)) {
+          (el as HTMLElement).classList.remove(APPLY);
+        }
+      }
       for (const id of commentBlockIds) {
+        if (present.has(id)) continue;
         const el = root.querySelector(
           `[data-id="${CSS.escape(id)}"].bn-block-outer`
         );
         if (el) el.classList.add(APPLY);
       }
     };
-    // Apply once now — covers the case where .bn-container already
-    // exists with blocks rendered (e.g. on tab-switch when editorReady
-    // was already true).
+
+    // Three previous attempts at marker maintenance failed in prod
+    // (06.05.2026): initial-paint-only got stripped on the next PM
+    // render; bounded poll (30×100ms) stopped before stable; mutation
+    // observer on .bn-container missed mounts because PM hadn't
+    // attached data-id attributes yet at observer-init time; mutation
+    // observer on document.body fired but apply() races with PM's
+    // own view update and our classList.add lands on a node PM is
+    // about to replace.
+    //
+    // Pragmatic fix: run apply() unconditionally on a cheap interval.
+    // The diff-based version above is a no-op when the class is
+    // already correct — checks are O(comments-on-page), not O(blocks).
+    // 400ms is fast enough that the delay between commenting and the
+    // marker showing isn't perceptible, and slow enough that the paint
+    // isn't a CPU cost in the editor's hot loop.
     apply();
-    // Observer setup runs against the BlockNote container, but it isn't
-    // guaranteed to exist at effect-init time — Editor is dynamically
-    // imported and BlockNote streams blocks in over a few ms after
-    // `editorReady` flips true. Diagnosed in DevTools 06.05.2026: the
-    // initial apply() saw 7 blocks AS-EXPECTED in the DOM but NONE of
-    // them with the comment's anchor data-id (because the data-id
-    // attribute is set asynchronously by ProseMirror's first view
-    // pass). Observing document.body sidesteps both timing issues:
-    // body always exists, and any subtree mutation that affects a
-    // block-outer ends up firing here regardless of which ancestor
-    // BlockNote ultimately mounts under. apply() filters back to only
-    // the blocks we care about, so the cost is bounded.
-    let scheduled = false;
-    const obs = new MutationObserver(() => {
-      if (scheduled) return;
-      scheduled = true;
-      requestAnimationFrame(() => {
-        scheduled = false;
-        apply();
-      });
-    });
-    obs.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["class", "data-id"],
-    });
-    return () => obs.disconnect();
+    const interval = setInterval(apply, 400);
+    return () => clearInterval(interval);
   }, [commentBlockIds, activePageId, editorReady]);
 
   const handleAddCommentForBlock = useCallback((blockId: string) => {
