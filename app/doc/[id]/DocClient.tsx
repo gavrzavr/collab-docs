@@ -748,61 +748,51 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   useEffect(() => {
     if (!editorReady) return;
     const APPLY = "pp-has-comment";
-    // TEMP debug — remove once class-paint is verified in prod.
-    (window as unknown as { __ppPaintLog?: unknown[] }).__ppPaintLog =
-      (window as unknown as { __ppPaintLog?: unknown[] }).__ppPaintLog || [];
-    const log = (window as unknown as { __ppPaintLog: unknown[] }).__ppPaintLog;
-    const apply = (reason: string) => {
+    const apply = () => {
       const root = document;
-      const before = root.querySelectorAll(`.${APPLY}`).length;
       // Wipe stale, then add to current set. Wipe-then-set is simpler
       // than diffing and the cost is negligible.
       root
         .querySelectorAll(`.${APPLY}`)
         .forEach((el) => el.classList.remove(APPLY));
-      let added = 0;
       for (const id of commentBlockIds) {
         const el = root.querySelector(
           `[data-id="${CSS.escape(id)}"].bn-block-outer`
         );
-        if (el) {
-          el.classList.add(APPLY);
-          added++;
-        }
+        if (el) el.classList.add(APPLY);
       }
-      log.push({
-        reason,
-        ids: Array.from(commentBlockIds),
-        before,
-        added,
-        time: Math.round(performance.now()),
-      });
     };
-    // Initial paint — runs synchronously after the React render that
-    // changed commentBlockIds.
-    apply("effect-init");
-    // PM re-render watcher. Every time the editor DOM mutates we
-    // re-apply, so the class survives transactions / cursor moves /
-    // selection changes / everything PM does to its subtree.
-    const editorRoot = document.querySelector(".bn-container");
+    // Apply once now — covers the case where .bn-container already
+    // exists with blocks rendered (e.g. on tab-switch when editorReady
+    // was already true).
+    apply();
+    // Observer setup runs against the BlockNote container, but it isn't
+    // guaranteed to exist at effect-init time — Editor is dynamically
+    // imported and BlockNote streams blocks in over a few ms after
+    // `editorReady` flips true. Diagnosed in DevTools 06.05.2026: the
+    // initial apply() saw 7 blocks AS-EXPECTED in the DOM but NONE of
+    // them with the comment's anchor data-id (because the data-id
+    // attribute is set asynchronously by ProseMirror's first view
+    // pass). Observing document.body sidesteps both timing issues:
+    // body always exists, and any subtree mutation that affects a
+    // block-outer ends up firing here regardless of which ancestor
+    // BlockNote ultimately mounts under. apply() filters back to only
+    // the blocks we care about, so the cost is bounded.
     let scheduled = false;
     const obs = new MutationObserver(() => {
-      // Coalesce many mutations within the same frame into one apply.
       if (scheduled) return;
       scheduled = true;
       requestAnimationFrame(() => {
         scheduled = false;
-        apply("mutation");
+        apply();
       });
     });
-    if (editorRoot) {
-      obs.observe(editorRoot, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ["class"],
-      });
-    }
+    obs.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "data-id"],
+    });
     return () => obs.disconnect();
   }, [commentBlockIds, activePageId, editorReady]);
 
