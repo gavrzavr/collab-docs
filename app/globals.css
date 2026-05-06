@@ -202,32 +202,23 @@ body {
   transform: scale(1.06);
 }
 
-/* ─── Block has comment(s) — visual marker ──────────────────────────
-   Set on .bn-block-outer when the block is anchored by at least one
-   unresolved comment. DocClient maintains this class via a useEffect
-   that watches the Yjs comments map and toggles `.pp-has-comment` on
-   the matching `[data-id="…"].bn-block-outer` nodes.
+/* ─── Block has comment(s) — overlay marker ─────────────────────────
+   Rendered as an absolute-positioned div in document.body (NOT as a
+   class on .bn-block-outer). Lives outside ProseMirror's managed
+   subtree so PM's view updates can't strip it the way they strip
+   classes/attributes added directly to block-outer nodes. DocClient
+   places one marker per commented block, repositioning on scroll +
+   on a 100ms tick to cover PM's height changes.
 
-   Marker is a thin amber left-border + a barely-there tint, same
-   yellow family as `.bn-highlight-target` (the intra-doc-link flash)
-   so the visual semantics line up: yellow = "something to look at
-   here." Subtle enough that a reader scanning the doc isn't yelled
-   at, distinct enough that they notice when they look. */
-.bn-block-outer.pp-has-comment {
-  position: relative;
+   Visual: thin amber left bar + barely-there tint extending across
+   the block's width. Same yellow family as .bn-highlight-target so
+   the visual vocabulary stays small (yellow = "something to look at"). */
+.pp-comment-marker {
+  position: fixed;
+  pointer-events: none;
   background: rgba(254, 240, 138, 0.12);
   border-radius: 4px;
-}
-.bn-block-outer.pp-has-comment::before {
-  content: "";
-  position: absolute;
-  left: -8px;
-  top: 4px;
-  bottom: 4px;
-  width: 3px;
-  background: #fcd34d;
-  border-radius: 2px;
-  pointer-events: none;
+  box-shadow: inset 3px 0 0 0 #fcd34d;
 }
 
 /* ─── Block-jump target highlight ────────────────────────────────────

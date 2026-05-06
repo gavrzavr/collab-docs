@@ -745,53 +745,102 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   // a MutationObserver on the editor root re-applies the class on EVERY
   // mutation. The work is O(comment-count), trivially cheap. Idempotent
   // because we always wipe + repaint the full set.
+  // ── Comment markers as overlay layer ─────────────────────────────
+  //
+  // Why an overlay and not a class on .bn-block-outer: ProseMirror
+  // owns the editor subtree and strips any non-standard class or
+  // attribute it didn't put there itself. Verified four times in prod
+  // (06.05.2026):
+  //   - classList.add('pp-has-comment') → gone within milliseconds
+  //   - setAttribute('data-pp-has-comment','1') → gone on next render
+  //   - MutationObserver re-paints racing PM's view update — class
+  //     lands on a node PM is about to swap out
+  //   - Even setInterval polling fights with PM's view loop endlessly
+  //
+  // Solution: ONE container div appended to document.body, populated
+  // with one absolute-positioned marker per commented block. Body is
+  // outside PM's reach. We poll ~10×/sec to update positions for
+  // scroll/resize/PM block height changes. Cost is bounded by comment
+  // count, not block count.
   useEffect(() => {
     if (!editorReady) return;
-    const APPLY = "pp-has-comment";
-    const apply = () => {
-      const root = document;
-      // Find blocks that currently have the class but shouldn't, and
-      // blocks that should have it but don't. Diff-based instead of
-      // wipe-and-set so we don't fight PM in a tight loop on every
-      // pass — only mutate when the desired state differs from current.
-      const present = new Set<string>();
-      for (const el of Array.from(
-        root.querySelectorAll(`.bn-block-outer.${APPLY}`)
-      )) {
-        const id = (el as HTMLElement).dataset.id;
-        if (id) present.add(id);
-        if (!id || !commentBlockIds.has(id)) {
-          (el as HTMLElement).classList.remove(APPLY);
-        }
-      }
+    const layer = document.createElement("div");
+    layer.className = "pp-comment-markers-layer";
+    layer.style.position = "fixed";
+    layer.style.inset = "0";
+    layer.style.pointerEvents = "none";
+    layer.style.zIndex = "5"; // above editor content, below floating toolbar
+    document.body.appendChild(layer);
+
+    const idToMarker = new Map<string, HTMLElement>();
+
+    const ensureMarker = (id: string): HTMLElement => {
+      let m = idToMarker.get(id);
+      if (m) return m;
+      m = document.createElement("div");
+      m.className = "pp-comment-marker";
+      m.dataset.commentBlock = id;
+      idToMarker.set(id, m);
+      layer.appendChild(m);
+      return m;
+    };
+
+    const place = () => {
+      const seen = new Set<string>();
       for (const id of commentBlockIds) {
-        if (present.has(id)) continue;
-        const el = root.querySelector(
+        const block = document.querySelector(
           `[data-id="${CSS.escape(id)}"].bn-block-outer`
-        );
-        if (el) el.classList.add(APPLY);
+        ) as HTMLElement | null;
+        if (!block) continue;
+        const rect = block.getBoundingClientRect();
+        // Skip placement if the block is completely off-screen — saves
+        // CPU on long docs. The marker stays in the layer with
+        // display:none and re-appears when the block scrolls back in.
+        const m = ensureMarker(id);
+        if (rect.bottom < 0 || rect.top > window.innerHeight) {
+          m.style.display = "none";
+        } else {
+          m.style.display = "block";
+          // Marker draws to the LEFT of the block as a thin amber bar
+          // + faint tint extending into the block's width. Aligns
+          // with how Notion / Linear show comment anchors.
+          m.style.left = `${Math.round(rect.left - 10)}px`;
+          m.style.top = `${Math.round(rect.top + 2)}px`;
+          m.style.width = `${Math.round(rect.width + 14)}px`;
+          m.style.height = `${Math.round(rect.height - 4)}px`;
+        }
+        seen.add(id);
+      }
+      // Garbage-collect markers for blocks that no longer have comments
+      // (or whose comment was deleted/resolved).
+      for (const [id, el] of idToMarker.entries()) {
+        if (!seen.has(id)) {
+          el.remove();
+          idToMarker.delete(id);
+        }
       }
     };
 
-    // Three previous attempts at marker maintenance failed in prod
-    // (06.05.2026): initial-paint-only got stripped on the next PM
-    // render; bounded poll (30×100ms) stopped before stable; mutation
-    // observer on .bn-container missed mounts because PM hadn't
-    // attached data-id attributes yet at observer-init time; mutation
-    // observer on document.body fired but apply() races with PM's
-    // own view update and our classList.add lands on a node PM is
-    // about to replace.
-    //
-    // Pragmatic fix: run apply() unconditionally on a cheap interval.
-    // The diff-based version above is a no-op when the class is
-    // already correct — checks are O(comments-on-page), not O(blocks).
-    // 400ms is fast enough that the delay between commenting and the
-    // marker showing isn't perceptible, and slow enough that the paint
-    // isn't a CPU cost in the editor's hot loop.
-    apply();
-    const interval = setInterval(apply, 400);
-    return () => clearInterval(interval);
-  }, [commentBlockIds, activePageId, editorReady]);
+    place();
+    const interval = setInterval(place, 100);
+
+    // Reposition on scroll + resize too (the interval covers it but
+    // these events make tracking feel instant during a scroll).
+    const onScrollOrResize = () => place();
+    if (scrollEl) scrollEl.addEventListener("scroll", onScrollOrResize, { passive: true });
+    window.addEventListener("resize", onScrollOrResize);
+
+    return () => {
+      clearInterval(interval);
+      if (scrollEl) scrollEl.removeEventListener("scroll", onScrollOrResize);
+      window.removeEventListener("resize", onScrollOrResize);
+      try {
+        document.body.removeChild(layer);
+      } catch {
+        /* already gone */
+      }
+    };
+  }, [commentBlockIds, activePageId, editorReady, scrollEl]);
 
   const handleAddCommentForBlock = useCallback((blockId: string) => {
     setComposeTargetBlockId(blockId);
