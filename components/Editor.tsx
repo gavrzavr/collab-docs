@@ -15,6 +15,7 @@ import { BlockNoteView } from "@blocknote/mantine";
 import { createExtension } from "@blocknote/core";
 import { TurnIntoItem } from "./TurnIntoItem";
 import { CopyLinkItem } from "./CopyLinkItem";
+import { CommentBlockMenuItem } from "./CommentBlockMenuItem";
 import { RiText, RiH1, RiH2, RiH3, RiListUnordered, RiListOrdered, RiListCheck3, RiQuoteText, RiLinkM } from "react-icons/ri";
 import * as Y from "yjs";
 import type { WebsocketProvider } from "y-websocket";
@@ -57,6 +58,10 @@ interface EditorProps {
    *  block in the doc; on select it inserts a link at the editor's
    *  current cursor position. */
   onOpenLinkPicker?: () => void;
+  /** Called when the user picks "Comment" in the drag-handle menu. The
+   *  parent should open the comments panel and target the composer at
+   *  the given block id. */
+  onAddComment?: (blockId: string) => void;
   /** Disable edits in the UI. The ws-server enforces this server-side too
    *  (viewer tokens have their sync updates dropped). */
   readOnly?: boolean;
@@ -109,7 +114,7 @@ function CollabBlockTypeSelect() {
   return <Components.FormattingToolbar.Select className="bn-select" items={selectItems} />;
 }
 
-export default function Editor({ ydoc, provider, fragmentName, userName, userColor, docId, activePageId, registerImportHtml, registerEditor, onOpenLinkPicker, readOnly }: EditorProps) {
+export default function Editor({ ydoc, provider, fragmentName, userName, userColor, docId, activePageId, registerImportHtml, registerEditor, onOpenLinkPicker, onAddComment, readOnly }: EditorProps) {
   // Resolve the fragment from the shared ydoc. Memoized on fragmentName so
   // useCreateBlockNote gets a stable reference per page — when fragmentName
   // changes (tab switch), the parent should remount us via a React key, which
@@ -192,6 +197,11 @@ export default function Editor({ ydoc, provider, fragmentName, userName, userCol
                 <CopyLinkItem docId={docId} activePageId={activePageId}>
                   Copy link
                 </CopyLinkItem>
+                {onAddComment && !readOnly && (
+                  <CommentBlockMenuItem onPickBlock={onAddComment}>
+                    Comment
+                  </CommentBlockMenuItem>
+                )}
                 <RemoveBlockItem>Delete</RemoveBlockItem>
                 <BlockColorsItem>Colors</BlockColorsItem>
               </DragHandleMenu>

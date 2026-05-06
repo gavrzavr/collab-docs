@@ -164,6 +164,34 @@ body {
   pointer-events: none !important;
 }
 
+/* ─── Block has comment(s) — visual marker ──────────────────────────
+   Set on .bn-block-outer when the block is anchored by at least one
+   unresolved comment. DocClient maintains this class via a useEffect
+   that watches the Yjs comments map and toggles `.pp-has-comment` on
+   the matching `[data-id="…"].bn-block-outer` nodes.
+
+   Marker is a thin amber left-border + a barely-there tint, same
+   yellow family as `.bn-highlight-target` (the intra-doc-link flash)
+   so the visual semantics line up: yellow = "something to look at
+   here." Subtle enough that a reader scanning the doc isn't yelled
+   at, distinct enough that they notice when they look. */
+.bn-block-outer.pp-has-comment {
+  position: relative;
+  background: rgba(254, 240, 138, 0.12);
+  border-radius: 4px;
+}
+.bn-block-outer.pp-has-comment::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  background: #fcd34d;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
 /* ─── Intra-doc link target highlight ────────────────────────────────
    Notion-style flash effect on the block you just deep-linked to.
    Triggered by DocClient when a #pageId.blockId hash resolves and the

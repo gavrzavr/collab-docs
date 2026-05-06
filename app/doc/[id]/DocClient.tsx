@@ -11,7 +11,9 @@ import DocPreview from "@/components/DocPreview";
 import OutlinePanel from "@/components/OutlinePanel";
 import PageTabs, { type PageMeta } from "@/components/PageTabs";
 import LinkPicker, { type LinkTarget } from "@/components/LinkPicker";
+import CommentsPanel from "@/components/CommentsPanel";
 import { extractBlocks } from "@/lib/yjs-blocks";
+import { listComments, observeComments } from "@/lib/comments";
 
 const Editor = dynamic(() => import("@/components/Editor"), { ssr: false });
 
@@ -116,6 +118,16 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
   const [activePageId, setActivePageIdState] = useState<string>(FIRST_PAGE_ID);
   /** Link picker (slash command "Link to block") state. */
   const [linkPickerOpen, setLinkPickerOpen] = useState(false);
+  /** Comments panel state. Default-open on desktop so the user sees the
+   *  feature exists; their toggle preference persists per doc via
+   *  localStorage. */
+  const [commentsPanelOpen, setCommentsPanelOpenState] = useState<boolean>(true);
+  const [composeTargetBlockId, setComposeTargetBlockId] = useState<string | null>(
+    null
+  );
+  /** Bumped on every Yjs comments-map change so `commentBlockIds` and the
+   *  unresolved-count for the toolbar badge re-derive. */
+  const [commentsTick, setCommentsTick] = useState(0);
   /** Imperative scroll-to-block. Stable across renders via useRef holding
    *  the latest scrollEl. We avoid React state for the pending block id
    *  because the state→effect cycle introduced a self-cancellation race
@@ -699,6 +711,114 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
     [user, provider, synced, pages.length]
   );
 
+  // ── Comments: subscribe + derive UI state ─────────────────────────
+  //
+  // The Yjs comments map is the single source of truth. We bump
+  // `commentsTick` on every change so memos re-derive — same pattern
+  // OutlinePanel uses for editor.onChange. From the snapshot we derive
+  // (a) `commentBlockIds` — the set of block ids that have at least one
+  // unresolved comment, used to paint `.pp-has-comment` on the editor's
+  // rendered blocks, and (b) `unresolvedThreadCount` for the toolbar
+  // badge.
+  useEffect(() => {
+    return observeComments(ydoc, () => setCommentsTick((t) => t + 1));
+  }, [ydoc]);
+
+  const commentBlockIds = useMemo<Set<string>>(() => {
+    const set = new Set<string>();
+    for (const c of listComments(ydoc)) {
+      if (!c.resolved) set.add(c.blockId);
+    }
+    return set;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ydoc, commentsTick]);
+
+  const unresolvedThreadCount = useMemo<number>(() => {
+    const all = listComments(ydoc);
+    const rootIds = new Set<string>();
+    for (const c of all) {
+      if (c.resolved) continue;
+      const rootId = c.parentId ?? c.id;
+      rootIds.add(rootId);
+    }
+    return rootIds.size;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ydoc, commentsTick]);
+
+  // Apply `.pp-has-comment` to the rendered block-outer for each block id
+  // in commentBlockIds. Yellow left-border + tint marker. Re-runs on
+  // commentsTick (anchor set changed) AND activePageId (BlockNote remount
+  // means the DOM nodes are fresh and need the class re-applied).
+  // Polling tail: BlockNote streams blocks into the DOM over the first
+  // few hundred ms after a tab switch; we poll every 100ms × 30 to catch
+  // late-mounted blocks. Cheap, idempotent.
+  useEffect(() => {
+    if (!editorReady) return;
+    let attempt = 0;
+    const MAX = 30;
+    const APPLY = "pp-has-comment";
+    const apply = () => {
+      const root = document;
+      // First: clear stale class everywhere — easier than diffing.
+      root
+        .querySelectorAll(`.${APPLY}`)
+        .forEach((el) => el.classList.remove(APPLY));
+      // Second: add to current set.
+      for (const id of commentBlockIds) {
+        const el = root.querySelector(
+          `[data-id="${CSS.escape(id)}"].bn-block-outer`
+        );
+        if (el) el.classList.add(APPLY);
+      }
+    };
+    apply();
+    const interval = setInterval(() => {
+      apply();
+      if (attempt++ >= MAX) clearInterval(interval);
+    }, 100);
+    return () => clearInterval(interval);
+  }, [commentBlockIds, activePageId, editorReady]);
+
+  // Persist the panel-open preference per doc.
+  const commentsPanelStorageKey = `pp:commentsPanelOpen:${id}`;
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem(commentsPanelStorageKey);
+    if (stored !== null) {
+      setCommentsPanelOpenState(stored === "1");
+    }
+  }, [commentsPanelStorageKey]);
+  const setCommentsPanelOpen = useCallback(
+    (next: boolean) => {
+      setCommentsPanelOpenState(next);
+      try {
+        window.localStorage.setItem(commentsPanelStorageKey, next ? "1" : "0");
+      } catch {
+        /* private mode — fine, just won't persist */
+      }
+    },
+    [commentsPanelStorageKey]
+  );
+
+  const handleAddCommentForBlock = useCallback((blockId: string) => {
+    setComposeTargetBlockId(blockId);
+    setCommentsPanelOpen(true);
+  }, [setCommentsPanelOpen]);
+
+  // Click on a thread in the panel → switch tab if needed, then scroll.
+  const handleJumpToCommentBlock = useCallback(
+    (pageId: string, blockId: string) => {
+      if (pageId !== activePageId) {
+        setActivePageIdState(pageId);
+      }
+      // setTimeout 0 so the tab switch above commits before scrollToBlock
+      // queries the DOM. scrollToBlock itself polls so this is just a
+      // head-start, not a strict requirement.
+      setTimeout(() => scrollToBlock(blockId), 0);
+    },
+    [activePageId, scrollToBlock]
+  );
+
   // ── Link picker: build target list from all pages of the doc ──────
   //
   // Recompiled on demand (when the picker opens) rather than continuously,
@@ -783,7 +903,17 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
 
   return (
     <div className="flex flex-col h-screen">
-      <Toolbar docId={id} sessionUser={sessionUser} onImportHtml={handleImportHtml} readOnly={readOnly} isOwner={isOwner} wsStatus={wsStatus} />
+      <Toolbar
+        docId={id}
+        sessionUser={sessionUser}
+        onImportHtml={handleImportHtml}
+        readOnly={readOnly}
+        isOwner={isOwner}
+        wsStatus={wsStatus}
+        commentsOpen={commentsPanelOpen}
+        onToggleComments={() => setCommentsPanelOpen(!commentsPanelOpen)}
+        unresolvedCommentCount={unresolvedThreadCount}
+      />
 
       {/* Read-only banner. Without this users land on /v/:token, see a normal-
           looking editor, try to type, see nothing happen, and conclude the
@@ -831,7 +961,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
           editor={(synced ? editor : null) as never}
           scrollContainer={scrollEl}
         />
-        <div ref={handleScrollRef} className="flex-1 overflow-y-auto">
+        <div ref={handleScrollRef} className="flex-1 overflow-y-auto" data-pp-scroll>
           <div className="max-w-[800px] mx-auto py-8">
             {/* Server-rendered preview while Yjs is connecting. Only relevant
                 for the main page; once synced, the editor takes over. */}
@@ -895,12 +1025,34 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
                   registerImportHtml={registerImportHtml}
                   registerEditor={handleRegisterEditor}
                   onOpenLinkPicker={handleOpenLinkPicker}
+                  onAddComment={handleAddCommentForBlock}
                   readOnly={readOnly}
                 />
               )}
             </div>
           </div>
         </div>
+        {commentsPanelOpen && editorReady && (
+          <CommentsPanel
+            ydoc={ydoc}
+            scrollContainer={scrollEl}
+            activePageId={activePageId}
+            onJumpTo={handleJumpToCommentBlock}
+            currentUser={
+              sessionUser
+                ? {
+                    email: sessionUser.email,
+                    name: sessionUser.name,
+                    image: sessionUser.image,
+                  }
+                : null
+            }
+            readOnly={readOnly}
+            composeTargetBlockId={composeTargetBlockId}
+            onComposeTargetUsed={() => setComposeTargetBlockId(null)}
+            onClose={() => setCommentsPanelOpen(false)}
+          />
+        )}
       </div>
       <LinkPicker
         open={linkPickerOpen}
