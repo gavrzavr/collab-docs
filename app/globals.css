@@ -230,20 +230,34 @@ body {
   pointer-events: none;
 }
 
-/* ─── Intra-doc link target highlight ────────────────────────────────
-   Notion-style flash effect on the block you just deep-linked to.
-   Triggered by DocClient when a #pageId.blockId hash resolves and the
-   target block is in the DOM. The class is added for ~2.2s and then
-   removed; the animation handles its own fade so the block returns to
-   default styling cleanly. Yellow keeps the "highlighter" metaphor
-   familiar without competing with our blue link color. */
+/* ─── Block-jump target highlight ────────────────────────────────────
+   Used both for intra-doc links AND for "Go to block" clicks in the
+   comments panel. The flash needs to clearly identify WHICH block —
+   Mikhail 06.05.2026: when jumping from a comment, "I want the whole
+   block to highlight yellow at that moment, so I understand which
+   exact block this comment is anchored to."
+   Hold-then-fade pattern: full opacity + a 4px outer ring for the first
+   2.5s so the user has plenty of time to notice and read, then 1.5s
+   fade out (4s total). Box-shadow draws an outline OUTSIDE the block
+   bounds so the highlight is visible even on white-background blocks
+   and blends nicely with the .pp-has-comment left bar without
+   conflicting. */
 @keyframes bn-highlight-fade {
-  0%   { background-color: rgba(254, 240, 138, 0.85); }
-  60%  { background-color: rgba(254, 240, 138, 0.6); }
-  100% { background-color: transparent; }
+  0% {
+    background-color: rgba(253, 224, 71, 0.5);
+    box-shadow: 0 0 0 4px rgba(253, 224, 71, 0.5);
+  }
+  60% {
+    background-color: rgba(253, 224, 71, 0.45);
+    box-shadow: 0 0 0 4px rgba(253, 224, 71, 0.45);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: 0 0 0 4px transparent;
+  }
 }
 .bn-highlight-target {
-  animation: bn-highlight-fade 2.2s ease-out;
+  animation: bn-highlight-fade 4s ease-out;
   border-radius: 4px;
 }
 

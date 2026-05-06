@@ -166,6 +166,9 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
       ) as HTMLElement | null;
       if (!live) return;
       live.classList.add("bn-highlight-target");
+      // Match the 4s `bn-highlight-fade` keyframe — keep the class on the
+      // node until the animation has fully faded, then remove so future
+      // jumps can re-trigger the same animation cleanly.
       setTimeout(() => {
         // Re-query because the element may have been re-mounted in the
         // meantime; remove the class from whichever node currently holds
@@ -176,7 +179,7 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         ) as HTMLElement | null;
         if (cur) cur.classList.remove("bn-highlight-target");
         else live.classList.remove("bn-highlight-target");
-      }, 2200);
+      }, 4000);
     };
 
     const tick = () => {
