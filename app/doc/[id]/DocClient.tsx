@@ -624,12 +624,15 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
         url.protocol === window.location.protocol &&
         url.host.replace(/^www\./, "") ===
           window.location.host.replace(/^www\./, "");
-      if (
-        !sameHost ||
-        url.pathname !== `/doc/${id}` ||
-        !url.hash
-      )
-        return null;
+      // Match ANY link to THIS doc (same pathname), with OR without a hash.
+      // Mikhail 06.05.2026: links to other parts of this document — any
+      // tab — must navigate in-tab; links to external resources keep the
+      // new-window default. We intercept all `/doc/<thisId>` clicks and
+      // either hash-nav (when hash differs) or no-op (when already here).
+      // External URLs (different host, /doc/<otherId>, /v/<token>, anywhere
+      // off-host) fall through to Tiptap's default handling, which honours
+      // the link's target="_blank" → new window.
+      if (!sameHost || url.pathname !== `/doc/${id}`) return null;
       return url;
     };
 
@@ -701,11 +704,16 @@ export default function DocClient({ id, initialBlocks, shareToken, sessionToken,
           // re-reads window.location.hash anyway, so old/newURL on the
           // event object are unused.
           window.dispatchEvent(new Event("hashchange"));
-        } else {
-          // Same hash already — re-trigger the scroll/highlight directly.
+        } else if (url.hash) {
+          // Same hash already — re-trigger the scroll/highlight directly
+          // so a second click on the same link still feels responsive.
           const { blockId } = parseHash(url.hash);
           if (blockId) scrollToBlock(blockId);
         }
+        // else: same-doc link without a hash. We've already preventDefault'd
+        // the new-tab fallback in mousedown — there's nothing to navigate to,
+        // the user is already viewing the doc. Silent no-op is the right
+        // outcome.
       }
     };
     // Capture-phase so we run before ProseMirror's bubble-phase listeners.
